@@ -1,204 +1,191 @@
 # Deploy Novatrix on AWS EC2
 
-This guide assumes **Ubuntu Server 22.04 or 24.04 LTS** on EC2. Adjust package names if you use Amazon Linux.
+This guide targets **Ubuntu Server 22.04 or 24.04 LTS** on EC2. The fastest path is the **automated setup script** after a `git clone`; optional steps cover PM2, Nginx, and **GHCR** images.
 
-## 1. Is the application “fully functional”?
+**Related:** [GITHUB-WORKFLOWS-BEGINNER.md](./GITHUB-WORKFLOWS-BEGINNER.md) (CI + container registry), [LLM-MODELS.md](./LLM-MODELS.md) (providers, UI keys), [EXEGOL.md](./EXEGOL.md) (sandbox image).
 
-**Yes, for a documented production path**, with these runtime requirements:
+---
+
+## 1. What “fully functional” means
 
 | Area | Status | What you need |
 |------|--------|----------------|
-| **Build** | OK | `npm install` + `npm run build` at repo root |
-| **Web app** | OK | Next.js 15; `npm run start` binds **0.0.0.0:3000** (reachable from EC2 public IP / Nginx) |
-| **Database** | Required | PostgreSQL + `DATABASE_URL`; run `npm run db:push` after Postgres is up |
-| **LLM** | Required | `OPENAI_API_KEY` (or compatible provider via `OPENAI_BASE_URL`) |
+| **Build** | OK | Node **20+**, `npm install` / `npm ci`, `npm run build` at repo root |
+| **Web app** | OK | **Next.js 16.2.x** (`apps/web`); `npm run start` listens on **0.0.0.0:3000** |
+| **Database** | Required | PostgreSQL + `DATABASE_URL`; `npm run db:push` after Postgres is up |
+| **LLM** | Required for chat | **Either** keys in `.env` **or** keys/models in the **web UI** (sidebar → LLM, stored in `localStorage` and sent per request). Embeddings/memory need an **OpenAI-compatible** key + embedding model when you want retrieval. |
 | **Target scope** | Required for real scans | `TARGET_ALLOWLIST` and/or session **Target** in UI/API |
-| **Redis + worker** | Optional | `REDIS_URL` + `npm run worker` for post-run `REPORT.md` jobs |
-| **Docker sandbox** | Optional | `SANDBOX_MODE=docker` + built image; Docker daemon on EC2 |
+| **Redis + worker** | Optional | `REDIS_URL` + `npm run worker` (or PM2 `novatrix-worker`) |
+| **Docker sandbox** | Optional | `SANDBOX_MODE=docker` + image; Docker on EC2; per-session images in UI |
 
-Without Postgres and `OPENAI_API_KEY`, the UI loads but chat returns errors. That is expected, not a broken codebase.
-
----
-
-## 2. Git (clone / update)
-
-Clone the application:
-
-```bash
-git clone https://github.com/MaramHarsha/Novatrix.git
-cd Novatrix
-```
-
-To pull latest on a server:
-
-```bash
-git pull origin main
-```
-
-**First-time Git identity** (if commits fail locally):
-
-```bash
-git config --global user.name "Your Name"
-git config --global user.email "you@example.com"
-```
-
-**Prepare a fresh Ubuntu machine** (Node, build tools; optional Docker): `chmod +x scripts/ubuntu/setup-ubuntu.sh && ./scripts/ubuntu/setup-ubuntu.sh` (see `INSTALL_DOCKER=1` in the script header).
+Without Postgres, the API returns database errors. Without any LLM key (env **or** UI), chat returns a **400** with a clear message.
 
 ---
 
-## 3. AWS prerequisites
+## 2. One-command server prep (recommended)
 
-1. **EC2 instance**  
-   - t3.small or larger recommended (2 GB+ RAM for `npm run build` + Node).  
-   - Storage: 20 GB+ gp3.
-
-2. **Security group inbound**  
-   - **22** — SSH (restrict to your IP).  
-   - **80** / **443** — HTTP/HTTPS if you use a browser.  
-   - **3000** — only if you expose Next directly (not needed if you use Nginx on 80/443).
-
-3. **Elastic IP** (optional) — stable public IP for DNS.
-
----
-
-## 4. EC2 server setup (Ubuntu)
-
-SSH in as `ubuntu` (or your AMI user), then:
+From a **fresh Ubuntu** instance (after SSH):
 
 ```bash
 sudo apt update && sudo apt upgrade -y
-sudo apt install -y git curl build-essential nginx
+sudo apt install -y git
+git clone https://github.com/MaramHarsha/Novatrix.git
+cd Novatrix
+chmod +x scripts/ubuntu/setup-ubuntu.sh
+INSTALL_DOCKER=1 NOVATRIX_FULL_SETUP=1 ./scripts/ubuntu/setup-ubuntu.sh
 ```
 
-### Node.js 20 LTS
+This script:
+
+- Installs **Node.js 20**, build tools, **OpenSSL** (Prisma).
+- Optionally installs **Docker** + Compose and starts **`docker compose`** (Postgres + Redis from repo `docker-compose.yml`).
+- Waits for Postgres, runs **`npm ci`** (falls back to `npm install` if needed), **`npm run db:push`**, **`npm run build`**.
+
+If `db:push` fails (wrong `DATABASE_URL`), edit `.env` (defaults match `docker-compose.yml`), then:
 
 ```bash
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt install -y nodejs
-node -v
-npm -v
+npm run db:push && npm run build
 ```
 
-### Docker (optional — for `SANDBOX_MODE=docker` and/or Postgres in Docker)
+**LLM keys** can remain empty in `.env` if you use the **LLM (browser only)** panel after opening the app.
+
+---
+
+## 3. Git and updates
+
+```bash
+cd ~/Novatrix
+git pull origin main
+INSTALL_DOCKER=1 NOVATRIX_FULL_SETUP=1 ./scripts/ubuntu/setup-ubuntu.sh
+```
+
+Or manually: `npm install && npm run db:push && npm run build` when schema or deps change.
+
+---
+
+## 4. AWS prerequisites
+
+1. **EC2** — **t3.small** or larger (2 GB+ RAM for `npm run build` + Node). **20 GB+** gp3 disk.
+2. **Security group** — **22** (SSH, restrict to your IP), **80/443** if using Nginx, **3000** only if exposing Next directly.
+3. **Elastic IP** (optional) — stable DNS.
+
+---
+
+## 5. Manual EC2 steps (if you skip `NOVATRIX_FULL_SETUP`)
+
+```bash
+sudo apt install -y git curl build-essential nginx openssl
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+```
+
+Docker (optional):
 
 ```bash
 sudo apt install -y docker.io docker-compose-plugin
 sudo usermod -aG docker "$USER"
-# log out and back in for group to apply
+# log out and back in for group membership
 ```
 
----
-
-## 5. Clone and install the app
+App:
 
 ```bash
 cd ~
-git clone git@github.com:MaramHarsha/Novatrix.git
-cd Novatrix
+git clone https://github.com/MaramHarsha/Novatrix.git && cd Novatrix
 cp .env.example .env
-nano .env   # fill DATABASE_URL, OPENAI_API_KEY, TARGET_ALLOWLIST, etc.
-```
-
-**Important for Next.js**: env vars are read from **`apps/web`** when you run `npm run start` with `cwd` there. Either:
-
-- Copy env into the web app: `cp .env apps/web/.env.production`, **or**
-- Export variables in the shell / PM2 before start (see PM2 section).
-
-Install and build:
-
-```bash
+nano .env   # DATABASE_URL, TARGET_ALLOWLIST, optional LLM_* / REDIS_URL / SANDBOX_*
+docker compose up -d   # optional local Postgres + Redis
 npm install
+npm run db:push
 npm run build
 ```
 
-Apply the database schema (Postgres must be reachable):
-
-```bash
-npm run db:push
-```
-
-Smoke test (foreground):
+Smoke test:
 
 ```bash
 cd apps/web
-export $(grep -v '^#' ../../.env | xargs)   # quick load; or set vars manually
 npm run start
 ```
 
-Visit `http://EC2_PUBLIC_IP:3000` (if security group allows 3000). Ctrl+C to stop.
+Open `http://EC2_PUBLIC_IP:3000` if port 3000 is open.
 
 ---
 
-## 6. PostgreSQL options
+## 6. Environment files and Next.js
 
-**A) RDS** — set `DATABASE_URL` to the RDS connection string (SSL params as required by AWS).
+Next reads **server** env from the process environment. For PM2, either:
 
-**B) Docker on the same EC2** — from repo root:
+- **`cp .env apps/web/.env.production`** at deploy time, or  
+- Export variables before `pm2 start`, or use `pm2 ecosystem` `env_file` patterns.
 
-```bash
-docker compose up -d postgres redis
-```
-
-Use `DATABASE_URL` from `.env.example` pattern, host `localhost` if Postgres port is published.
-
-**C) Postgres on EC2 without Docker** — install `postgresql`, create DB/user, set `DATABASE_URL`.
+The **browser UI** can supply **LLM** overrides per request; that does not remove the need for **`DATABASE_URL`** on the server for Prisma.
 
 ---
 
-## 7. Run with PM2 (recommended)
+## 7. PostgreSQL options
+
+| Option | Notes |
+|--------|--------|
+| **Docker on EC2** | `docker compose up -d` — use host `localhost` in `DATABASE_URL` when port 5432 is published. |
+| **RDS** | Set `DATABASE_URL` to RDS; add SSL query params if required. |
+| **Native apt** | Install `postgresql`, create DB/user, set `DATABASE_URL`. |
+
+---
+
+## 8. PM2 (production)
 
 From **repo root**:
 
 ```bash
 sudo npm install -g pm2
-# Ensure apps/web sees env (example: copy production env)
 cp .env apps/web/.env.production
-
 pm2 start ecosystem.config.cjs
 pm2 save
 pm2 startup
-# Run the command PM2 prints (sudo env PATH=... pm2 startup systemd -u ubuntu --hp /home/ubuntu)
+# run the command PM2 prints (systemd)
 ```
 
-**Worker**: only start if `REDIS_URL` is set in the environment PM2 uses. You can delete the worker app from `ecosystem.config.cjs` or run:
+Stop the worker if `REDIS_URL` is unset:
 
 ```bash
-pm2 stop novatrix-worker
-pm2 delete novatrix-worker
+pm2 stop novatrix-worker && pm2 delete novatrix-worker
 ```
 
 ---
 
-## 8. Nginx + HTTPS
+## 9. Nginx + HTTPS
 
 ```bash
 sudo cp infra/nginx/novatrix.conf.example /etc/nginx/sites-available/novatrix
-sudo nano /etc/nginx/sites-available/novatrix   # set server_name
+sudo nano /etc/nginx/sites-available/novatrix
 sudo ln -sf /etc/nginx/sites-available/novatrix /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
 sudo apt install -y certbot python3-certbot-nginx
 sudo certbot --nginx -d your.domain.com
 ```
 
-Point your DNS **A record** to the EC2 public IP.
+---
+
+## 10. Pre-built images (GHCR)
+
+CI pushes **`novatrix-sandbox`**, **`novatrix-web`**, **`novatrix-worker`** to `ghcr.io/<lowercase-owner>/…`. See **[GITHUB-WORKFLOWS-BEGINNER.md](./GITHUB-WORKFLOWS-BEGINNER.md)** for login, visibility, and manual runs.
 
 ---
 
-## 9. Checklist — nothing missing?
+## 11. Checklist
 
 | Item | Notes |
 |------|--------|
-| `.env` on server | Never commit; create from `.env.example` |
-| `npm run build` | Run after every `git pull` that changes code |
-| `npm run db:push` | Run when `prisma/schema.prisma` changes |
-| **Outbound HTTPS** from EC2 | Required for OpenAI API |
-| **Sandbox scans** | If targets are on the public Internet, set `SANDBOX_DOCKER_NETWORK=bridge` when using Docker |
-| **Firewall** | Prefer Nginx on 443 only; avoid exposing 3000 publicly if possible |
-| **Streaming / timeouts** | Nginx `proxy_read_timeout` in example is 3600s for long agent runs |
+| `.env` | Never commit; optional LLM keys if using UI only |
+| `npm run build` | After code pulls that change deps or Next |
+| `npm run db:push` | After `prisma/schema.prisma` changes |
+| Outbound **HTTPS** | Required for OpenAI / Anthropic APIs from EC2 |
+| Sandbox scans to Internet | `SANDBOX_DOCKER_NETWORK=bridge` (or session UI override) |
+| Long agent runs | Nginx `proxy_read_timeout` in `novatrix.conf.example` |
 
 ---
 
-## 10. Operational commands
+## 12. Operational commands
 
 ```bash
 cd ~/Novatrix && git pull && npm install && npm run build && npm run db:push
@@ -208,20 +195,20 @@ pm2 logs novatrix-web
 
 ---
 
-## 11. Troubleshooting
+## 13. Troubleshooting
 
 | Symptom | Likely cause |
 |---------|----------------|
-| `OPENAI_API_KEY is not set` | Env not visible to Next process; use `apps/web/.env.production` or PM2 env |
-| Prisma `DATABASE_URL` error | Postgres not running / wrong host / security group |
-| Blank or 502 via Nginx | Next not listening on 127.0.0.1:3000; check `pm2 status` and `curl -I localhost:3000` |
-| Git push asks for password | Use SSH remote or a GitHub Personal Access Token with HTTPS |
+| Chat **400** / missing key | No LLM key in `.env` **and** none sent from UI; set one. |
+| Prisma / `DATABASE_URL` | Postgres not running or wrong host / security group |
+| 502 via Nginx | Next not on `127.0.0.1:3000`; check `pm2 status` |
+| `npm ci` fails | Run `npm install` once, commit updated `package-lock.json`, or use `NOVATRIX_FULL_SETUP` (script falls back). |
 
 ---
 
-## 12. Security hardening (short)
+## 14. Security (short)
 
-- Set **`MUTATION_API_KEY`** in production and store the browser key only for admins.  
-- Restrict SSH to your IP; keep the OS patched.  
-- Use **HTTPS** only in production.  
-- Run **`SANDBOX_MODE=docker`** with a non-root user inside the image for real isolation.
+- Set **`MUTATION_API_KEY`** in production for mutating APIs.  
+- Use **HTTPS** so browser-supplied LLM keys are not sent in clear text.  
+- Restrict SSH; patch the OS regularly.  
+- Prefer **`SANDBOX_MODE=docker`** for real isolation when executing tools.

@@ -32,3 +32,6 @@ tools:
 wordlists:
   - name: SecLists
     note: Mount read-only at /wordlists/seclists when needed
+
+# Optional full offensive image (community); see docs/EXEGOL.md in repo
+exegol_agent_hint: Optional Exegol Docker image nwodtuhs/exegol (tags free, full, web, ad, light, osint, nightly) provides 400+ tools upstream; set SANDBOX_IMAGE and SANDBOX_MODE=docker. https://exegol.readthedocs.io/

@@ -4,12 +4,60 @@ Neo-style **autonomous security assessment** stack (chat UI + agent + sandbox + 
 
 **Repository:** [github.com/MaramHarsha/Novatrix](https://github.com/MaramHarsha/Novatrix)
 
-## Stack
+## Project plan (how we got here)
 
-- **Monorepo** (npm workspaces): `apps/web` (Next.js 15), `packages/agent` (OpenAI tool loop), `packages/sandbox` (Docker CLI or mock shell)
-- **PostgreSQL** + Prisma (`docker-compose` uses `pgvector/pgvector:pg16` for optional vector extension experiments)
-- **Tier T1** pentest tools in `infra/docker/sandbox.Dockerfile` (ProjectDiscovery: nuclei, httpx, subfinder, katana, dnsx, ffuf + sqlmap)
-- **Novatrix UI**: chat + live terminal stream + Browser / HTTP / Network panels + findings list (`apps/web/src/app/page.tsx`)
+The project evolved from a **Neo-inspired** autonomous assessment concept into **Novatrix** as a concrete monorepo: chat-driven objectives, tool execution, evidence, and scheduling—not a line-by-line clone of Neo, but the same *shape* of product (chat → agent loop → sandbox → findings).
+
+| Phase | Focus |
+|-------|--------|
+| **Foundation** | Monorepo (`apps/web`, `packages/agent`, `packages/sandbox`), Prisma + Postgres, sessions/runs/messages, allowlisted `http_request` / `browser_navigate`, `terminal_exec`, `record_finding`. |
+| **LLM breadth** | OpenAI-compatible and **Anthropic Claude** paths, shared tool dispatch, **retries** on rate limits, **`GET /api/llm/models`** + curated catalog ([LLM-MODELS.md](docs/LLM-MODELS.md)). |
+| **Sandbox depth** | **Docker** vs **mock** modes, streamed terminal output, optional **Docker network** (`none` / `bridge`). |
+| **Exegol** | Optional **community** offensive image (`nwodtuhs/exegol:*`); auto `--entrypoint` handling; docs in [EXEGOL.md](docs/EXEGOL.md). |
+| **Dual profiles** | Per-session **Novatrix** + **Exegol** images from the UI; `sandbox_profile` on `terminal_exec`; **docker pull** when images/network change. |
+| **Shipping & ops** | **GHCR** images (`novatrix-sandbox`, `novatrix-web`, `novatrix-worker`) via GitHub Actions; [beginner CI guide](docs/GITHUB-WORKFLOWS-BEGINNER.md). |
+| **DX / deploy** | **LLM keys & models in the browser** (optional `.env`); **Ubuntu/AWS** one-shot script ([setup-ubuntu.sh](scripts/ubuntu/setup-ubuntu.sh), [DEPLOY-AWS-EC2.md](docs/DEPLOY-AWS-EC2.md)). |
+| **UI** | Single-page **chat** + live **Terminal / Browser / HTTP / Network** panels + **findings**; session sandbox and LLM controls in the sidebar. |
+
+**Parity checklist** vs public Neo docs: [neo-acceptance-matrix.md](docs/neo-acceptance-matrix.md).
+
+## Tech stack
+
+| Layer | Choices |
+|-------|---------|
+| **Web** | **Next.js 16.2** (App Router), React 19, TypeScript; SSE streaming for agent output. |
+| **Agent** | Tool-calling loop: OpenAI Chat Completions + Anthropic Messages API; shared `dispatchTool` (`packages/agent`). |
+| **Data** | **PostgreSQL** + **Prisma**; optional **pgvector** image for embedding experiments; `MemoryEntry` + OpenAI-compatible embeddings. |
+| **Queue / jobs** | **Redis** + **BullMQ** (`apps/web/scripts/worker.mjs`) for post-run artifacts (optional). |
+| **Sandbox** | Host **Docker CLI** (`docker run`) or **mock** shell; Tier-1 tools in `infra/docker/sandbox.Dockerfile`; optional **Exegol** image. |
+| **Containers** | `docker-compose.yml` (Postgres + Redis); **GHCR** production images via [docker-ghcr.yml](.github/workflows/docker-ghcr.yml). |
+| **Auth / safety** | Optional **`MUTATION_API_KEY`** for mutating APIs; **URL allowlists** for HTTP/browser tools. |
+
+## System design (high level)
+
+Architecture as a **vector diagram** (SVG) so it always appears as a picture on GitHub, in IDEs, and in PDFs—no Mermaid plugin required. Source file: [`docs/diagrams/novatrix-system-design.svg`](docs/diagrams/novatrix-system-design.svg).
+
+<p align="center">
+  <img
+    src="docs/diagrams/novatrix-system-design.svg"
+    alt="System design: Browser to Next.js App Router and PostgreSQL; Agent to LLM APIs and dispatchTool; dispatchTool to Sandbox and allowlisted HTTP targets"
+    width="780"
+  />
+</p>
+
+**Flow:** the user sends a **chat** message → **`POST /api/sessions/:id/messages`** loads **history** from Postgres, resolves **LLM** config (env + optional body from the UI), optionally **pulls Docker images**, then runs **`runAgentTurn`** / **`runAgentTurnAnthropic`** → tools execute in the **workspace** (filesystem under the run) and/or **Docker** (`terminal_exec`, `browser_navigate`) or **HTTP** (`http_request`) → assistant text streams back; **findings** persist to Postgres; optional **worker** consumes Redis for heavy exports.
+
+## Documentation index
+
+| Document | Description |
+|----------|-------------|
+| [docs/LLM-MODELS.md](docs/LLM-MODELS.md) | Providers, model IDs, Ollama, rate limits, **browser UI keys** vs `.env`. |
+| [docs/DEPLOY-AWS-EC2.md](docs/DEPLOY-AWS-EC2.md) | **AWS EC2** deployment: Node, Postgres, PM2, Nginx, TLS, checklist. |
+| [docs/GITHUB-WORKFLOWS-BEGINNER.md](docs/GITHUB-WORKFLOWS-BEGINNER.md) | **GitHub Actions** + **GHCR** beginner guide (workflows, pulls, troubleshooting). |
+| [docs/EXEGOL.md](docs/EXEGOL.md) | Using **Exegol** as an optional sandbox image (Docker Hub tags, entrypoint, scope). |
+| [docs/neo-acceptance-matrix.md](docs/neo-acceptance-matrix.md) | **Neo doc parity** checklist (sandboxes, tools, evidence, memory, scheduling). |
+
+**Also useful:** [`docs/diagrams/novatrix-system-design.svg`](docs/diagrams/novatrix-system-design.svg) (system design diagram source), [`infra/docker/tools.manifest.yaml`](infra/docker/tools.manifest.yaml) (bundled CLI inventory + Exegol hint), [`scripts/ubuntu/setup-ubuntu.sh`](scripts/ubuntu/setup-ubuntu.sh) (Ubuntu/AWS bootstrap), [`.env.example`](.env.example) (environment template).
 
 ## Quick start
 
@@ -36,7 +84,13 @@ Neo-style **autonomous security assessment** stack (chat UI + agent + sandbox + 
 
    **Windows (cmd):** `copy .env.example .env`
 
-   Set `OPENAI_API_KEY` (or compatible provider). Adjust `TARGET_ALLOWLIST` to match your lab targets (comma-separated URL prefixes).
+   Set **`OPENAI_API_KEY`** / **`ANTHROPIC_API_KEY`** in `.env` **or** leave them empty and configure keys in the **LLM (browser only)** sidebar (saved in `localStorage`, sent each chat). Use **any model id** your provider supports (`OPENAI_MODEL` / `ANTHROPIC_MODEL`). For **Ollama** locally: `LLM_PROVIDER=openai`, `OPENAI_BASE_URL=http://127.0.0.1:11434/v1`, `OPENAI_API_KEY=ollama`, and `OPENAI_MODEL` from `ollama list`.
+
+   Full catalog, Ollama steps, and **OpenAI vs Anthropic rate limits** (with official doc links): **[docs/LLM-MODELS.md](docs/LLM-MODELS.md)**. Curated JSON: **`GET /api/llm/models`**.
+
+   Embeddings / session memory use `OPENAI_API_KEY` when set; without it, memory retrieval is skipped.
+
+   Adjust `TARGET_ALLOWLIST` to match your lab targets (comma-separated URL prefixes).
 
 4. **Database**
 
@@ -63,13 +117,19 @@ Neo-style **autonomous security assessment** stack (chat UI + agent + sandbox + 
   ```
 
 - **`SANDBOX_DOCKER_NETWORK`**: `none` (default) for strong egress isolation, or `bridge` when scans must reach the Internet from the container.
+- **Exegol (optional)**: point `SANDBOX_IMAGE` at e.g. `nwodtuhs/exegol:web` after `docker pull`; Novatrix auto-uses `--entrypoint /bin/bash` for Exegol images so `terminal_exec` works. Details: [docs/EXEGOL.md](docs/EXEGOL.md).
+- **Per-session sandbox (UI)**: In the web app sidebar you can enable Novatrix and/or Exegol, override image names and Docker network without editing `.env`. When `SANDBOX_MODE=docker`, the first chat run of a session runs `docker pull` for the configured images (skipped if unchanged). The agent passes `sandbox_profile` on `terminal_exec` to pick the container.
+
+## Pre-built images (GHCR)
+
+CI workflow [`.github/workflows/docker-ghcr.yml`](.github/workflows/docker-ghcr.yml) builds and pushes **`novatrix-sandbox`**, **`novatrix-web`**, and **`novatrix-worker`** to `ghcr.io/<lowercase-github-owner>/…` on pushes to `main` (path-filtered), releases, and manual **workflow_dispatch**. Pull instead of building locally, for example `docker pull ghcr.io/<owner>/novatrix-sandbox:latest`. The app image is built from [`infra/docker/web.Dockerfile`](infra/docker/web.Dockerfile) (monorepo root context). **Beginner guide:** [docs/GITHUB-WORKFLOWS-BEGINNER.md](docs/GITHUB-WORKFLOWS-BEGINNER.md).
 
 ## Optional services
 
 - **Redis + worker**: set `REDIS_URL`, then `npm run worker` to process BullMQ jobs (e.g. `REPORT.md` export after each run).
 - **Scoped targets**: create a `Target` via `/api/projects` + `/api/projects/:id/targets`, then `PATCH /api/sessions/:id` with `targetId`. Allowlists merge env `TARGET_ALLOWLIST` with the target URL prefix.
 - **Integrations**: `POST /api/integrations/slack` and `POST /api/integrations/github` when env vars from `.env.example` are set.
-- **Doc parity checklist**: `docs/neo-acceptance-matrix.md`.
+- **Doc parity checklist**: [docs/neo-acceptance-matrix.md](docs/neo-acceptance-matrix.md).
 
 ## npm scripts
 
@@ -82,21 +142,25 @@ Neo-style **autonomous security assessment** stack (chat UI + agent + sandbox + 
 | `npm run db:studio` | Prisma Studio GUI |
 | `npm run worker` | BullMQ worker (needs `REDIS_URL`) |
 
-## Ubuntu server prep (optional)
+## Ubuntu server prep (AWS / bare metal)
 
-On a fresh **Ubuntu 22.04 / 24.04** machine (e.g. before clone + install), you can install Node 20 and build tools:
+Script: [`scripts/ubuntu/setup-ubuntu.sh`](scripts/ubuntu/setup-ubuntu.sh).
+
+**Full stack in one go** (after `git clone` + `cd Novatrix`):
 
 ```bash
 chmod +x scripts/ubuntu/setup-ubuntu.sh
-./scripts/ubuntu/setup-ubuntu.sh
-# optional: INSTALL_DOCKER=1 ./scripts/ubuntu/setup-ubuntu.sh
+INSTALL_DOCKER=1 NOVATRIX_FULL_SETUP=1 ./scripts/ubuntu/setup-ubuntu.sh
 ```
 
-Then clone this repo and follow **Quick start** above.
+**Dependencies only** (then follow Quick start yourself):
 
-## AWS EC2 deployment
+```bash
+chmod +x scripts/ubuntu/setup-ubuntu.sh
+INSTALL_DOCKER=1 ./scripts/ubuntu/setup-ubuntu.sh
+```
 
-See **[docs/DEPLOY-AWS-EC2.md](docs/DEPLOY-AWS-EC2.md)** (Node, Postgres, PM2, Nginx, TLS, checklist).
+See the script header for `NOVATRIX_CLONE_URL`, `SKIP_DB_PUSH`, `SKIP_BUILD`, and other options. Full EC2 guide: **[docs/DEPLOY-AWS-EC2.md](docs/DEPLOY-AWS-EC2.md)** (also listed under [Documentation index](#documentation-index) above).
 
 ## License
 

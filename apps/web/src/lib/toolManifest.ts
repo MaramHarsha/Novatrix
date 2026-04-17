@@ -13,6 +13,11 @@ function parseTierAndTools(yaml: string): { tier: string; tools: string[] } {
   return { tier, tools };
 }
 
+function parseExegolHint(yaml: string): string | null {
+  const line = /^exegol_agent_hint:\s*(.+)$/m.exec(yaml);
+  return line?.[1]?.trim() ?? null;
+}
+
 /** Human-readable catalog snippet for the system prompt (Neo-style capability awareness). */
 export async function loadToolCatalogSummary(manifestPath?: string): Promise<string> {
   const p =
@@ -21,8 +26,10 @@ export async function loadToolCatalogSummary(manifestPath?: string): Promise<str
   try {
     const raw = await readFile(p, 'utf8');
     const { tier, tools } = parseTierAndTools(raw);
-    if (!tools.length) return `Tier ${tier} (manifest found but no tools parsed).`;
-    return `Tier ${tier}: ${tools.join(', ')}. Wordlists: mount SecLists read-only when fuzzing (see manifest note).`;
+    const exegol = parseExegolHint(raw);
+    const tail = exegol ? ` ${exegol}` : '';
+    if (!tools.length) return `Tier ${tier} (manifest found but no tools parsed).${tail}`;
+    return `Tier ${tier}: ${tools.join(', ')}. Wordlists: mount SecLists read-only when fuzzing (see manifest note).${tail}`;
   } catch {
     return 'Tool manifest not found; assume common PD CLIs may be installed in the sandbox image.';
   }

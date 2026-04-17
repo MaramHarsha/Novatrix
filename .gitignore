@@ -16,3 +16,4 @@ prisma/*.db-journal
 .idea
 .vscode
 coverage
+claude-api.txt

@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
-import { runAgentTurn } from '@novatrix/agent';
+import { runAgentTurn, runAgentTurnAnthropic, type FindingPayload } from '@novatrix/agent';
 import { prisma } from '@/lib/prisma';
 import { getEnv } from '@/lib/env';
 import { ensureSessionWorkspace } from '@/lib/workspacePath';
@@ -11,6 +11,15 @@ import { enqueuePostRun } from '@/lib/queue';
 import { loadToolCatalogSummary } from '@/lib/toolManifest';
 import { resolveAllowlistForSession } from '@/lib/sessionAllowlist';
 import { assertMutationAuthorized } from '@/lib/mutationAuth';
+import { pullDockerImages } from '@/lib/dockerPull';
+import {
+  buildSandboxProfiles,
+  buildSandboxRuntimeHint,
+  dockerImagesForProfiles,
+  sandboxPullSignature,
+  type SandboxEnvSlice,
+} from '@/lib/sessionSandbox';
+import { parseLlmOverrides, resolveLlmConfig, validateResolvedLlm } from '@/lib/resolveLlmRequest';
 
 export const maxDuration = 300;
 
@@ -36,8 +45,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
 
   const env = getEnv();
-  if (!env.openaiApiKey) {
-    return new Response(JSON.stringify({ error: 'OPENAI_API_KEY is not set' }), { status: 500 });
+  const llm = resolveLlmConfig(env, parseLlmOverrides(body.llm));
+  const llmCheck = validateResolvedLlm(llm);
+  if (!llmCheck.ok) {
+    return new Response(JSON.stringify({ error: llmCheck.error }), { status: 400 });
   }
 
   const session = await prisma.session.findUnique({ where: { id: sessionId } });
@@ -48,7 +59,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const prior = await prisma.message.findMany({
     where: { sessionId, role: { in: ['user', 'assistant'] } },
     orderBy: { createdAt: 'asc' },
-    take: 40,
+    take: 60,
   });
 
   await prisma.message.create({
@@ -77,17 +88,22 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     toolCatalogSummary = '';
   }
 
-  const openai = new OpenAI({
-    apiKey: env.openaiApiKey,
-    baseURL: env.openaiBaseUrl,
-  });
+  const openaiForEmbeddings =
+    llm.openaiApiKey.length > 0
+      ? new OpenAI({
+          apiKey: llm.openaiApiKey,
+          baseURL: llm.openaiBaseUrl,
+        })
+      : null;
 
   let memoryContext = '';
-  try {
-    const qEmb = await embedText(openai, env.embeddingModel, content);
-    memoryContext = await retrieveMemoryContext(prisma, sessionId, qEmb);
-  } catch {
-    /* embeddings optional if quota/model missing */
+  if (openaiForEmbeddings) {
+    try {
+      const qEmb = await embedText(openaiForEmbeddings, llm.embeddingModel, content);
+      memoryContext = await retrieveMemoryContext(prisma, sessionId, qEmb);
+    } catch {
+      /* embeddings optional if quota/model missing */
+    }
   }
 
   await audit(prisma, {
@@ -103,95 +119,164 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       const send = (obj: object) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`));
 
       try {
-        const result = await runAgentTurn({
-          openai,
-          model: env.openaiModel,
-          sandbox: {
-            mode: env.sandboxMode,
-            image: env.sandboxImage,
-            workspaceHostPath,
-            dockerNetwork: env.sandboxMode === 'docker' ? env.sandboxDockerNetwork : undefined,
-          },
-          allowlist,
-          userMessage: content,
-          history,
-          memoryContext: memoryContext || undefined,
-          toolCatalogSummary: toolCatalogSummary || undefined,
-          onDelta: (text) => send({ type: 'delta', text }),
-          onToolStream: (name, chunk, stream) => {
-            send({ type: 'tool_stream', name, stream, chunk });
-          },
-          onTool: async (name, args, toolResult) => {
-            send({ type: 'tool', name, args, result: toolResult.slice(0, 12000) });
-            await audit(prisma, {
-              sessionId,
+        const freshSession =
+          (await prisma.session.findUnique({ where: { id: sessionId } })) ?? session;
+        const envSlice: SandboxEnvSlice = {
+          sandboxMode: env.sandboxMode,
+          sandboxImage: env.sandboxImage,
+          sandboxDockerNetwork: env.sandboxDockerNetwork,
+          sandboxDockerEntrypoint: env.sandboxDockerEntrypoint,
+        };
+        const sandboxProfiles = buildSandboxProfiles(freshSession, envSlice, workspaceHostPath);
+        const network = (
+          freshSession.sandboxDockerNetwork?.trim() ||
+          env.sandboxDockerNetwork ||
+          'none'
+        ).trim();
+        const pullSig = sandboxPullSignature(sandboxProfiles, network);
+
+        if (env.sandboxMode === 'docker') {
+          const images = dockerImagesForProfiles(sandboxProfiles);
+          if (images.length && freshSession.sandboxPullSignature !== pullSig) {
+            send({ type: 'sandbox_pull', status: 'started', images });
+            const results = await pullDockerImages(images);
+            const allOk = results.every((r) => r.ok);
+            send({ type: 'sandbox_pull', status: allOk ? 'complete' : 'partial', results });
+            if (allOk) {
+              await prisma.session.update({
+                where: { id: sessionId },
+                data: { sandboxPullSignature: pullSig },
+              });
+            }
+          }
+        }
+
+        const sandboxRuntimeHint = buildSandboxRuntimeHint(sandboxProfiles);
+
+        const llmRetry = {
+          maxRetries: env.llmMaxRetries,
+          baseDelayMs: env.llmRetryBaseMs,
+          maxDelayMs: env.llmRetryMaxMs,
+        };
+
+        const onTool = async (name: string, args: string, toolResult: string) => {
+          send({ type: 'tool', name, args, result: toolResult.slice(0, 12000) });
+          await audit(prisma, {
+            sessionId,
+            runId: run.id,
+            kind: `tool:${name}`,
+            payload: { argsPreview: args.slice(0, 2000) },
+          });
+
+          if (name === 'http_request') {
+            const a = parseToolArgs(args);
+            const method = String(a.method ?? '');
+            const url = String(a.url ?? '');
+            const statusMatch = toolResult.match(/^status (\d+)/);
+            send({
+              type: 'api',
+              method,
+              url,
+              preview: toolResult.slice(0, 4000),
+            });
+            send({
+              type: 'network',
+              line: `${method} ${url} → ${statusMatch?.[1] ?? 'n/a'}`,
+            });
+          }
+
+          if (name === 'terminal_exec' && toolResult.length > 0) {
+            try {
+              await writeArtifact(
+                prisma,
+                run.id,
+                workspaceHostPath,
+                'terminal',
+                `terminal-${Date.now()}.txt`,
+                toolResult
+              );
+            } catch {
+              /* ignore artifact errors */
+            }
+          }
+
+          if (name === 'browser_navigate' && toolResult.length > 0) {
+            try {
+              await writeArtifact(
+                prisma,
+                run.id,
+                workspaceHostPath,
+                'browser',
+                `browser-${Date.now()}.txt`,
+                toolResult
+              );
+              send({ type: 'browser', preview: toolResult.slice(0, 4000) });
+            } catch {
+              /* ignore */
+            }
+          }
+        };
+
+        const onFinding = async (f: FindingPayload) => {
+          await prisma.finding.create({
+            data: {
               runId: run.id,
-              kind: `tool:${name}`,
-              payload: { argsPreview: args.slice(0, 2000) },
-            });
+              title: f.title,
+              severity: f.severity,
+              description: f.description,
+              evidence: f.evidence,
+              payload: f.payload,
+            },
+          });
+          send({ type: 'finding', finding: f });
+        };
 
-            if (name === 'http_request') {
-              const a = parseToolArgs(args);
-              const method = String(a.method ?? '');
-              const url = String(a.url ?? '');
-              const statusMatch = toolResult.match(/^status (\d+)/);
-              send({
-                type: 'api',
-                method,
-                url,
-                preview: toolResult.slice(0, 4000),
+        const openaiForChat =
+          llm.provider === 'openai'
+            ? new OpenAI({
+                apiKey: llm.openaiApiKey,
+                baseURL: llm.openaiBaseUrl,
+              })
+            : null;
+
+        const result =
+          llm.provider === 'anthropic'
+            ? await runAgentTurnAnthropic({
+                anthropicApiKey: llm.anthropicApiKey,
+                model: llm.anthropicModel,
+                sandboxProfiles,
+                allowlist,
+                userMessage: content,
+                history,
+                memoryContext: memoryContext || undefined,
+                toolCatalogSummary: toolCatalogSummary || undefined,
+                sandboxRuntimeHint,
+                onDelta: (text) => send({ type: 'delta', text }),
+                onToolStream: (name, chunk, stream) => {
+                  send({ type: 'tool_stream', name, stream, chunk });
+                },
+                onTool,
+                onFinding,
+                llmRetry,
+              })
+            : await runAgentTurn({
+                openai: openaiForChat!,
+                model: llm.openaiModel,
+                sandboxProfiles,
+                allowlist,
+                userMessage: content,
+                history,
+                memoryContext: memoryContext || undefined,
+                toolCatalogSummary: toolCatalogSummary || undefined,
+                sandboxRuntimeHint,
+                onDelta: (text) => send({ type: 'delta', text }),
+                onToolStream: (name, chunk, stream) => {
+                  send({ type: 'tool_stream', name, stream, chunk });
+                },
+                onTool,
+                onFinding,
+                llmRetry,
               });
-              send({
-                type: 'network',
-                line: `${method} ${url} → ${statusMatch?.[1] ?? 'n/a'}`,
-              });
-            }
-
-            if (name === 'terminal_exec' && toolResult.length > 0) {
-              try {
-                await writeArtifact(
-                  prisma,
-                  run.id,
-                  workspaceHostPath,
-                  'terminal',
-                  `terminal-${Date.now()}.txt`,
-                  toolResult
-                );
-              } catch {
-                /* ignore artifact errors */
-              }
-            }
-
-            if (name === 'browser_navigate' && toolResult.length > 0) {
-              try {
-                await writeArtifact(
-                  prisma,
-                  run.id,
-                  workspaceHostPath,
-                  'browser',
-                  `browser-${Date.now()}.txt`,
-                  toolResult
-                );
-                send({ type: 'browser', preview: toolResult.slice(0, 4000) });
-              } catch {
-                /* ignore */
-              }
-            }
-          },
-          onFinding: async (f) => {
-            await prisma.finding.create({
-              data: {
-                runId: run.id,
-                title: f.title,
-                severity: f.severity,
-                description: f.description,
-                evidence: f.evidence,
-                payload: f.payload,
-              },
-            });
-            send({ type: 'finding', finding: f });
-          },
-        });
 
         await prisma.message.create({
           data: {
@@ -210,16 +295,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
           },
         });
 
-        try {
-          await persistRunSummaryMemory(
-            prisma,
-            openai,
-            env.embeddingModel,
-            sessionId,
-            result.assistantVisible
-          );
-        } catch {
-          /* optional */
+        if (openaiForEmbeddings) {
+          try {
+            await persistRunSummaryMemory(
+              prisma,
+              openaiForEmbeddings,
+              llm.embeddingModel,
+              sessionId,
+              result.assistantVisible
+            );
+          } catch {
+            /* optional */
+          }
         }
 
         await audit(prisma, { sessionId, runId: run.id, kind: 'run.complete', payload: {} });

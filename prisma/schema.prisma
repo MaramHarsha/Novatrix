@@ -48,6 +48,18 @@ model Session {
   target        Target?       @relation(fields: [targetId], references: [id], onDelete: SetNull)
   userId        String?
   user          User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  /// Per-session Docker sandbox: Tier-1 Novatrix image (null = use server SANDBOX_IMAGE).
+  sandboxNovatrixImage   String?
+  /// Per-session Exegol image (null = nwodtuhs/exegol:web).
+  sandboxExegolImage     String?
+  /// When SANDBOX_MODE=docker, run terminal/browser in this Novatrix-based image.
+  sandboxEnableNovatrix  Boolean   @default(true)
+  /// When SANDBOX_MODE=docker, also expose Exegol as a second terminal profile.
+  sandboxEnableExegol    Boolean   @default(false)
+  /// Override docker network for this session: none | bridge (null = server SANDBOX_DOCKER_NETWORK).
+  sandboxDockerNetwork   String?
+  /// Last successful `docker pull` signature for this session (image list + network).
+  sandboxPullSignature   String?
   messages      Message[]
   runs          Run[]
   memoryEntries MemoryEntry[]

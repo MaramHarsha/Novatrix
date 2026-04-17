@@ -6,11 +6,16 @@ export const tools: ChatCompletionTool[] = [
     function: {
       name: 'terminal_exec',
       description:
-        'Run a shell command inside the isolated sandbox workspace (ProjectDiscovery-style tooling: nuclei, httpx, ffuf, etc.).',
+        'Run a shell command inside the isolated sandbox workspace. Use sandbox_profile "novatrix" for the default Tier-1 toolchain (nuclei, httpx, ffuf, …) or "exegol" when the session enables the full Exegol image. Cross-check with both when both are enabled.',
       parameters: {
         type: 'object',
         properties: {
           command: { type: 'string', description: 'Full shell command to run' },
+          sandbox_profile: {
+            type: 'string',
+            enum: ['novatrix', 'exegol'],
+            description: 'Which Docker profile runs the command (default: novatrix)',
+          },
         },
         required: ['command'],
       },

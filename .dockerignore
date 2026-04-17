@@ -1,0 +1,16 @@
+# Monorepo Docker build context (web + worker images)
+node_modules
+**/node_modules
+.git
+.github
+**/.next
+**/dist
+artifacts
+uploads
+*.log
+.env
+.env.*
+!.env.example
+coverage
+.turbo
+.cursor

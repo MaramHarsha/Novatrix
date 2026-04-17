@@ -27,6 +27,16 @@ function authHeaders(): HeadersInit {
   return key ? { 'x-api-key': key } : {};
 }
 
+const LLM_LS = {
+  provider: 'NOVATRIX_LLM_PROVIDER',
+  openaiKey: 'NOVATRIX_OPENAI_API_KEY',
+  openaiBaseUrl: 'NOVATRIX_OPENAI_BASE_URL',
+  openaiModel: 'NOVATRIX_OPENAI_MODEL',
+  anthropicKey: 'NOVATRIX_ANTHROPIC_API_KEY',
+  anthropicModel: 'NOVATRIX_ANTHROPIC_MODEL',
+  embeddingModel: 'NOVATRIX_EMBEDDING_MODEL',
+} as const;
+
 export default function HomePage() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [lastRunId, setLastRunId] = useState<string | null>(null);
@@ -45,6 +55,26 @@ export default function HomePage() {
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [scheduleCron, setScheduleCron] = useState('0 */6 * * *');
   const [schedulePrompt, setSchedulePrompt] = useState('Re-run passive httpx fingerprint on the primary target.');
+  const [sbDefaults, setSbDefaults] = useState<{
+    sandboxMode: string;
+    defaultNovatrixImage: string;
+    defaultExegolImage: string;
+    defaultDockerNetwork: string;
+  } | null>(null);
+  const [sbNovatrixEnabled, setSbNovatrixEnabled] = useState(true);
+  const [sbExegolEnabled, setSbExegolEnabled] = useState(false);
+  const [sbNovatrixImage, setSbNovatrixImage] = useState('');
+  const [sbExegolImage, setSbExegolImage] = useState('');
+  const [sbNetwork, setSbNetwork] = useState('');
+  const [sbSaving, setSbSaving] = useState(false);
+  const [sbPulling, setSbPulling] = useState(false);
+  const [llmProvider, setLlmProvider] = useState<'openai' | 'anthropic'>('openai');
+  const [llmOpenaiKey, setLlmOpenaiKey] = useState('');
+  const [llmOpenaiBaseUrl, setLlmOpenaiBaseUrl] = useState('');
+  const [llmOpenaiModel, setLlmOpenaiModel] = useState('');
+  const [llmAnthropicKey, setLlmAnthropicKey] = useState('');
+  const [llmAnthropicModel, setLlmAnthropicModel] = useState('');
+  const [llmEmbeddingModel, setLlmEmbeddingModel] = useState('');
 
   const screenshotUrl = useMemo(() => {
     if (!lastRunId) return null;
@@ -60,8 +90,17 @@ export default function HomePage() {
   }, []);
 
   useEffect(() => {
-    const k = typeof window !== 'undefined' ? window.localStorage.getItem('MUTATION_API_KEY') : '';
+    if (typeof window === 'undefined') return;
+    const k = window.localStorage.getItem('MUTATION_API_KEY');
     if (k) setApiKeyInput(k);
+    const p = window.localStorage.getItem(LLM_LS.provider);
+    if (p === 'anthropic' || p === 'openai') setLlmProvider(p);
+    setLlmOpenaiKey(window.localStorage.getItem(LLM_LS.openaiKey) ?? '');
+    setLlmOpenaiBaseUrl(window.localStorage.getItem(LLM_LS.openaiBaseUrl) ?? '');
+    setLlmOpenaiModel(window.localStorage.getItem(LLM_LS.openaiModel) ?? '');
+    setLlmAnthropicKey(window.localStorage.getItem(LLM_LS.anthropicKey) ?? '');
+    setLlmAnthropicModel(window.localStorage.getItem(LLM_LS.anthropicModel) ?? '');
+    setLlmEmbeddingModel(window.localStorage.getItem(LLM_LS.embeddingModel) ?? '');
   }, []);
 
   useEffect(() => {
@@ -86,10 +125,78 @@ export default function HomePage() {
     void refreshFindings(sessionId);
   }, [sessionId, refreshFindings]);
 
+  useEffect(() => {
+    if (!sessionId) return;
+    void (async () => {
+      try {
+        const [cfgRes, sessRes] = await Promise.all([
+          fetch('/api/sandbox-config'),
+          fetch(`/api/sessions/${sessionId}`),
+        ]);
+        if (cfgRes.ok) {
+          const cfg = (await cfgRes.json()) as {
+            sandboxMode: string;
+            defaultNovatrixImage: string;
+            defaultExegolImage: string;
+            defaultDockerNetwork: string;
+          };
+          setSbDefaults(cfg);
+        }
+        if (sessRes.ok) {
+          const sess = (await sessRes.json()) as {
+            sandboxEnableNovatrix?: boolean;
+            sandboxEnableExegol?: boolean;
+            sandboxNovatrixImage?: string | null;
+            sandboxExegolImage?: string | null;
+            sandboxDockerNetwork?: string | null;
+          };
+          setSbNovatrixEnabled(sess.sandboxEnableNovatrix !== false);
+          setSbExegolEnabled(!!sess.sandboxEnableExegol);
+          setSbNovatrixImage(sess.sandboxNovatrixImage ?? '');
+          setSbExegolImage(sess.sandboxExegolImage ?? '');
+          setSbNetwork(sess.sandboxDockerNetwork ?? '');
+        }
+      } catch {
+        /* ignore */
+      }
+    })();
+  }, [sessionId]);
+
   const saveApiKey = () => {
     window.localStorage.setItem('MUTATION_API_KEY', apiKeyInput.trim());
     setError(null);
   };
+
+  const saveLlmToBrowser = () => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(LLM_LS.provider, llmProvider);
+    window.localStorage.setItem(LLM_LS.openaiKey, llmOpenaiKey);
+    window.localStorage.setItem(LLM_LS.openaiBaseUrl, llmOpenaiBaseUrl);
+    window.localStorage.setItem(LLM_LS.openaiModel, llmOpenaiModel);
+    window.localStorage.setItem(LLM_LS.anthropicKey, llmAnthropicKey);
+    window.localStorage.setItem(LLM_LS.anthropicModel, llmAnthropicModel);
+    window.localStorage.setItem(LLM_LS.embeddingModel, llmEmbeddingModel);
+    setError(null);
+  };
+
+  const buildLlmRequestPayload = useCallback(() => {
+    const llm: Record<string, string> = { provider: llmProvider };
+    if (llmOpenaiKey.trim()) llm.openaiApiKey = llmOpenaiKey.trim();
+    if (llmOpenaiBaseUrl.trim()) llm.openaiBaseUrl = llmOpenaiBaseUrl.trim();
+    if (llmOpenaiModel.trim()) llm.openaiModel = llmOpenaiModel.trim();
+    if (llmAnthropicKey.trim()) llm.anthropicApiKey = llmAnthropicKey.trim();
+    if (llmAnthropicModel.trim()) llm.anthropicModel = llmAnthropicModel.trim();
+    if (llmEmbeddingModel.trim()) llm.embeddingModel = llmEmbeddingModel.trim();
+    return llm;
+  }, [
+    llmProvider,
+    llmOpenaiKey,
+    llmOpenaiBaseUrl,
+    llmOpenaiModel,
+    llmAnthropicKey,
+    llmAnthropicModel,
+    llmEmbeddingModel,
+  ]);
 
   const applyScope = async () => {
     if (!sessionId || !scopeUrl.trim()) return;
@@ -129,6 +236,54 @@ export default function HomePage() {
     }
   };
 
+  const saveSandboxSettings = async () => {
+    if (!sessionId) return;
+    setSbSaving(true);
+    setError(null);
+    try {
+      const r = await fetch(`/api/sessions/${sessionId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({
+          sandboxEnableNovatrix: sbNovatrixEnabled,
+          sandboxEnableExegol: sbExegolEnabled,
+          sandboxNovatrixImage: sbNovatrixImage.trim() || null,
+          sandboxExegolImage: sbExegolImage.trim() || null,
+          sandboxDockerNetwork: sbNetwork.trim() ? sbNetwork.trim() : null,
+        }),
+      });
+      if (!r.ok) {
+        const j = (await r.json().catch(() => ({}))) as { error?: string };
+        throw new Error(j.error ?? 'Sandbox save failed');
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSbSaving(false);
+    }
+  };
+
+  const pullSandboxImagesNow = async () => {
+    if (!sessionId) return;
+    setSbPulling(true);
+    setError(null);
+    try {
+      const r = await fetch(`/api/sessions/${sessionId}/sandbox/pull`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({}),
+      });
+      const j = (await r.json()) as { results?: { image: string; ok: boolean; error?: string }[]; error?: string };
+      if (!r.ok) throw new Error(j.error ?? 'Pull failed');
+      const lines = (j.results ?? []).map((x) => `${x.image}: ${x.ok ? 'ok' : x.error ?? 'fail'}`).join('\n');
+      setTerminalLog((t) => `${t}\n\n--- docker pull (manual) ---\n${lines}\n`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSbPulling(false);
+    }
+  };
+
   const createSchedule = async () => {
     if (!sessionId) return;
     setError(null);
@@ -161,7 +316,7 @@ export default function HomePage() {
       const res = await fetch(`/api/sessions/${sessionId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ content: userMsg }),
+        body: JSON.stringify({ content: userMsg, llm: buildLlmRequestPayload() }),
       });
 
       if (!res.ok) {
@@ -199,6 +354,9 @@ export default function HomePage() {
             preview?: string;
             runId?: string;
             line?: string;
+            status?: string;
+            images?: string[];
+            results?: { image: string; ok: boolean; error?: string }[];
           };
           try {
             data = JSON.parse(line.slice(6)) as typeof data;
@@ -243,6 +401,13 @@ export default function HomePage() {
           if (data.type === 'browser' && data.preview) {
             setBrowserLog((b) => `${b}\n${(data.preview ?? '').slice(0, 6000)}`);
           }
+          if (data.type === 'sandbox_pull') {
+            const detail =
+              data.status === 'started'
+                ? `pull started: ${(data.images ?? []).join(', ')}`
+                : `pull ${data.status ?? ''}: ${JSON.stringify(data.results ?? [])}`;
+            setTerminalLog((t) => `${t}\n[sandbox] ${detail}\n`);
+          }
           if (data.type === 'error') {
             setError(data.message ?? 'Unknown error');
           }
@@ -260,7 +425,7 @@ export default function HomePage() {
     } finally {
       setBusy(false);
     }
-  }, [sessionId, input, busy, refreshFindings]);
+  }, [sessionId, input, busy, refreshFindings, buildLlmRequestPayload]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
@@ -280,8 +445,8 @@ export default function HomePage() {
           <h1 style={{ margin: 0, fontSize: '1.2rem', fontWeight: 650 }}>Novatrix</h1>
           <p style={{ margin: '0.35rem 0 0', fontSize: '0.82rem', color: 'var(--muted)', maxWidth: 720 }}>
             Authorized security assessments: chat objective, isolated sandbox execution, live terminal stream,
-            HTTP/API trace, evidence-backed findings. Configure <code>OPENAI_API_KEY</code>, optional{' '}
-            <code>MUTATION_API_KEY</code>, and scope targets below.
+            HTTP/API trace, evidence-backed findings. Set LLM keys and models in the sidebar (stored in the browser) or
+            via server <code>.env</code>; optional <code>MUTATION_API_KEY</code> for mutating APIs; configure scope below.
           </p>
         </div>
         <div style={{ fontSize: '0.75rem', color: 'var(--muted)', textAlign: 'right' }}>
@@ -327,6 +492,62 @@ export default function HomePage() {
             Save API key locally
           </button>
 
+          <div style={{ fontSize: '0.72rem', color: 'var(--muted)', margin: '1rem 0 0.35rem' }}>LLM (browser only)</div>
+          <p style={{ fontSize: '0.68rem', color: 'var(--muted)', margin: '0 0 0.4rem' }}>
+            Keys and models are stored in <code>localStorage</code> and sent with each chat request (not written to{' '}
+            <code>.env</code>). Use HTTPS in production. Switching provider or model keeps the same session transcript so
+            the next model sees prior user/assistant turns.
+          </p>
+          <select
+            value={llmProvider}
+            onChange={(e) => setLlmProvider(e.target.value as 'openai' | 'anthropic')}
+            style={{ ...inputStyle, marginBottom: '0.35rem' }}
+          >
+            <option value="openai">OpenAI-compatible</option>
+            <option value="anthropic">Anthropic Claude</option>
+          </select>
+          <input
+            type="password"
+            value={llmOpenaiKey}
+            onChange={(e) => setLlmOpenaiKey(e.target.value)}
+            placeholder="OpenAI API key (or ollama / LiteLLM key)"
+            style={{ ...inputStyle, marginBottom: '0.35rem' }}
+          />
+          <input
+            value={llmOpenaiBaseUrl}
+            onChange={(e) => setLlmOpenaiBaseUrl(e.target.value)}
+            placeholder="OpenAI base URL (empty = https://api.openai.com/v1)"
+            style={{ ...inputStyle, marginBottom: '0.35rem' }}
+          />
+          <input
+            value={llmOpenaiModel}
+            onChange={(e) => setLlmOpenaiModel(e.target.value)}
+            placeholder="OpenAI model id (e.g. gpt-4o-mini)"
+            style={{ ...inputStyle, marginBottom: '0.35rem' }}
+          />
+          <input
+            type="password"
+            value={llmAnthropicKey}
+            onChange={(e) => setLlmAnthropicKey(e.target.value)}
+            placeholder="Anthropic API key"
+            style={{ ...inputStyle, marginBottom: '0.35rem' }}
+          />
+          <input
+            value={llmAnthropicModel}
+            onChange={(e) => setLlmAnthropicModel(e.target.value)}
+            placeholder="Anthropic model (e.g. claude-opus-4-6)"
+            style={{ ...inputStyle, marginBottom: '0.35rem' }}
+          />
+          <input
+            value={llmEmbeddingModel}
+            onChange={(e) => setLlmEmbeddingModel(e.target.value)}
+            placeholder="Embedding model (OpenAI-compatible; optional)"
+            style={{ ...inputStyle, marginBottom: '0.35rem' }}
+          />
+          <button type="button" onClick={saveLlmToBrowser} style={{ ...btnStyle, width: '100%' }}>
+            Save LLM settings to browser
+          </button>
+
           <div style={{ fontSize: '0.72rem', color: 'var(--muted)', margin: '1rem 0 0.35rem' }}>Scope</div>
           <input
             value={scopeUrl}
@@ -341,6 +562,71 @@ export default function HomePage() {
             style={{ ...btnStyle, marginTop: '0.45rem', width: '100%' }}
           >
             Apply scope to session
+          </button>
+
+          <div style={{ fontSize: '0.72rem', color: 'var(--muted)', margin: '1rem 0 0.35rem' }}>Sandbox (per session)</div>
+          <p style={{ fontSize: '0.68rem', color: 'var(--muted)', margin: '0 0 0.4rem' }}>
+            Server <code>SANDBOX_MODE</code>: {sbDefaults?.sandboxMode ?? '…'}. When mode is <code>docker</code>, the first
+            chat run pulls configured images automatically. Enable both Novatrix and Exegol so the model can choose{' '}
+            <code>sandbox_profile</code> per command.
+          </p>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.8rem', marginBottom: '0.25rem' }}>
+            <input
+              type="checkbox"
+              checked={sbNovatrixEnabled}
+              onChange={(e) => setSbNovatrixEnabled(e.target.checked)}
+              disabled={!sessionId}
+            />
+            Novatrix (Tier-1 tools)
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.8rem', marginBottom: '0.45rem' }}>
+            <input
+              type="checkbox"
+              checked={sbExegolEnabled}
+              onChange={(e) => setSbExegolEnabled(e.target.checked)}
+              disabled={!sessionId}
+            />
+            Exegol (full image)
+          </label>
+          <input
+            value={sbNovatrixImage}
+            onChange={(e) => setSbNovatrixImage(e.target.value)}
+            placeholder={`Novatrix image (empty = server default${sbDefaults ? `: ${sbDefaults.defaultNovatrixImage}` : ''})`}
+            disabled={!sessionId}
+            style={{ ...inputStyle, marginBottom: '0.35rem' }}
+          />
+          <input
+            value={sbExegolImage}
+            onChange={(e) => setSbExegolImage(e.target.value)}
+            placeholder={`Exegol image (empty = ${sbDefaults?.defaultExegolImage ?? 'nwodtuhs/exegol:web'})`}
+            disabled={!sessionId}
+            style={{ ...inputStyle, marginBottom: '0.35rem' }}
+          />
+          <select
+            value={sbNetwork}
+            onChange={(e) => setSbNetwork(e.target.value)}
+            disabled={!sessionId}
+            style={{ ...inputStyle, marginBottom: '0.35rem' }}
+          >
+            <option value="">Docker network (server default{sbDefaults ? `: ${sbDefaults.defaultDockerNetwork}` : ''})</option>
+            <option value="none">none (no outbound)</option>
+            <option value="bridge">bridge (Internet)</option>
+          </select>
+          <button
+            type="button"
+            onClick={() => void saveSandboxSettings()}
+            disabled={!sessionId || sbSaving}
+            style={{ ...btnStyle, marginTop: '0.2rem', width: '100%' }}
+          >
+            {sbSaving ? 'Saving…' : 'Save sandbox settings'}
+          </button>
+          <button
+            type="button"
+            onClick={() => void pullSandboxImagesNow()}
+            disabled={!sessionId || sbPulling || sbDefaults?.sandboxMode !== 'docker'}
+            style={{ ...btnStyle, marginTop: '0.35rem', width: '100%' }}
+          >
+            {sbPulling ? 'Pulling…' : 'Pull images now (docker)'}
           </button>
 
           <div style={{ fontSize: '0.72rem', color: 'var(--muted)', margin: '1rem 0 0.35rem' }}>Scheduling</div>

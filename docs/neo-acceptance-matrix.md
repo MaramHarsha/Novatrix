@@ -1,6 +1,6 @@
 # Neo public-doc parity checklist (Novatrix)
 
-Maps shipped behaviors in the **Novatrix** codebase to ProjectDiscovery Neo documentation (behavioral parity, not source parity).
+Maps shipped behaviors in the **Novatrix** codebase to ProjectDiscovery Neo documentation (behavioral parity, not source parity). Deploy and CI: [DEPLOY-AWS-EC2.md](./DEPLOY-AWS-EC2.md), [GITHUB-WORKFLOWS-BEGINNER.md](./GITHUB-WORKFLOWS-BEGINNER.md).
 
 | Neo doc theme | Implementation | Status |
 |---------------|----------------|--------|

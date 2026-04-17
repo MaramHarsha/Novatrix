@@ -28,6 +28,11 @@ export interface SandboxConfig {
    * Matches Neo sandbox isolation narrative; override for lab scans needing DNS/HTTP.
    */
   dockerNetwork?: string;
+  /**
+   * Override image ENTRYPOINT. Use `bash` for [Exegol](https://exegol.readthedocs.io/) and similar images.
+   * `none` / `off` = never override. Omit = auto: if `image` matches `/exegol/i`, use `--entrypoint /bin/bash`.
+   */
+  dockerEntrypoint?: string;
 }
 
 function collectStreamedSpawn(
@@ -69,6 +74,26 @@ function collectStreamedSpawn(
   });
 }
 
+function dockerEntrypointMode(cfg: SandboxConfig): 'bash-entrypoint' | 'default' {
+  const ex = cfg.dockerEntrypoint?.trim().toLowerCase() ?? '';
+  if (ex === 'none' || ex === 'off') return 'default';
+  if (ex === 'bash' || ex === '/bin/bash') return 'bash-entrypoint';
+  if (cfg.dockerEntrypoint?.trim()) return 'bash-entrypoint'; // custom path still needs shell args after IMAGE
+  if (/exegol/i.test(cfg.image)) return 'bash-entrypoint';
+  return 'default';
+}
+
+function dockerEntrypointArgs(cfg: SandboxConfig): string[] {
+  const mode = dockerEntrypointMode(cfg);
+  const ex = cfg.dockerEntrypoint?.trim() ?? '';
+  if (ex === 'none' || ex.toLowerCase() === 'off') return [];
+  if (ex && ex.toLowerCase() !== 'bash' && ex.toLowerCase() !== '/bin/bash' && mode === 'bash-entrypoint') {
+    return ['--entrypoint', ex];
+  }
+  if (mode === 'bash-entrypoint') return ['--entrypoint', '/bin/bash'];
+  return [];
+}
+
 /**
  * Run command inside Docker container with workspace bind-mount (docker CLI).
  */
@@ -78,20 +103,23 @@ export async function terminalExecDocker(
 ): Promise<TerminalExecResult> {
   const timeoutMs = opts.timeoutMs ?? 120_000;
   const network = cfg.dockerNetwork ?? 'none';
+  const entrypointMode = dockerEntrypointMode(cfg);
+  const imageCmd =
+    entrypointMode === 'bash-entrypoint'
+      ? ['-lc', opts.command]
+      : ['/bin/bash', '-lc', opts.command];
+
   const dockerArgs = [
     'run',
     '--rm',
     ...(network && network !== 'default' ? ['--network', network] : []),
+    ...dockerEntrypointArgs(cfg),
     '-v',
     `${cfg.workspaceHostPath}:/workspace`,
     '-w',
     '/workspace',
-    '-e',
-    `PATH=/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin`,
     cfg.image,
-    '/bin/bash',
-    '-lc',
-    opts.command,
+    ...imageCmd,
   ];
   const env = { ...process.env, ...opts.env } as NodeJS.ProcessEnv;
   return collectStreamedSpawn('docker', dockerArgs, { env, timeoutMs, onStream: opts.onStream });
