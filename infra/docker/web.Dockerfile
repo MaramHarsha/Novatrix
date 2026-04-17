@@ -23,19 +23,25 @@ COPY apps/web ./apps/web
 COPY packages/agent ./packages/agent
 COPY packages/sandbox ./packages/sandbox
 COPY prisma ./prisma
+COPY infra/docker/tools.manifest.yaml infra/docker/tools.manifest.yaml
 ENV NEXT_TELEMETRY_DISABLED=1
 # Prisma/OpenNext do not need a real DB at image build time
 ENV DATABASE_URL="postgresql://novatrix:novatrix@127.0.0.1:5432/novatrix?schema=public"
+# Default manifest path (repo root); matches loadToolCatalogSummary() when TOOL_MANIFEST_PATH is unset
+ENV TOOL_MANIFEST_PATH=/app/infra/docker/tools.manifest.yaml
+ENV NODE_OPTIONS=--max-old-space-size=4096
 RUN npm run build
 
 FROM base AS runner
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
+ENV TOOL_MANIFEST_PATH=/app/infra/docker/tools.manifest.yaml
 RUN addgroup --system --gid 1001 nodejs && adduser --system --uid 1001 nextjs
 
 COPY --from=builder /app/apps/web/.next/standalone ./
 COPY --from=builder /app/apps/web/.next/static /app/apps/web/.next/static
 COPY --from=builder /app/apps/web/public /app/apps/web/public
+COPY --from=builder /app/infra/docker/tools.manifest.yaml /app/infra/docker/tools.manifest.yaml
 
 USER nextjs
 EXPOSE 3000

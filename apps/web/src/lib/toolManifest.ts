@@ -20,17 +20,24 @@ function parseExegolHint(yaml: string): string | null {
 
 /** Human-readable catalog snippet for the system prompt (Neo-style capability awareness). */
 export async function loadToolCatalogSummary(manifestPath?: string): Promise<string> {
-  const p =
-    manifestPath ??
-    path.join(process.cwd(), '..', '..', 'infra', 'docker', 'tools.manifest.yaml');
-  try {
-    const raw = await readFile(p, 'utf8');
-    const { tier, tools } = parseTierAndTools(raw);
-    const exegol = parseExegolHint(raw);
-    const tail = exegol ? ` ${exegol}` : '';
-    if (!tools.length) return `Tier ${tier} (manifest found but no tools parsed).${tail}`;
-    return `Tier ${tier}: ${tools.join(', ')}. Wordlists: mount SecLists read-only when fuzzing (see manifest note).${tail}`;
-  } catch {
-    return 'Tool manifest not found; assume common PD CLIs may be installed in the sandbox image.';
+  const candidates = [
+    manifestPath?.trim(),
+    process.env.TOOL_MANIFEST_PATH?.trim(),
+    path.join(process.cwd(), 'infra', 'docker', 'tools.manifest.yaml'),
+    path.join(process.cwd(), '..', '..', 'infra', 'docker', 'tools.manifest.yaml'),
+  ].filter((x): x is string => Boolean(x));
+
+  for (const p of candidates) {
+    try {
+      const raw = await readFile(p, 'utf8');
+      const { tier, tools } = parseTierAndTools(raw);
+      const exegol = parseExegolHint(raw);
+      const tail = exegol ? ` ${exegol}` : '';
+      if (!tools.length) return `Tier ${tier} (manifest found but no tools parsed).${tail}`;
+      return `Tier ${tier}: ${tools.join(', ')}. Wordlists: mount SecLists read-only when fuzzing (see manifest note).${tail}`;
+    } catch {
+      /* try next candidate */
+    }
   }
+  return 'Tool manifest not found; assume common PD CLIs may be installed in the sandbox image.';
 }

@@ -203,6 +203,7 @@ pm2 logs novatrix-web
 | Prisma / `DATABASE_URL` | Postgres not running or wrong host / security group |
 | 502 via Nginx | Next not on `127.0.0.1:3000`; check `pm2 status` |
 | `npm ci` fails | Run `npm install` once, commit updated `package-lock.json`, or use `NOVATRIX_FULL_SETUP` (script falls back). |
+| **`containerd.io : Conflicts: containerd`** when installing Docker | Ubuntu’s `containerd` package clashes with Docker Inc.’s `containerd.io` if **both** the default Ubuntu repos and **`download.docker.com`** are enabled. **Fix:** run `scripts/ubuntu/setup-ubuntu.sh` again from the latest repo (it falls back to `get.docker.com`), **or** `curl -fsSL https://get.docker.com \| sudo sh`, **or** set `DOCKER_USE_GET_DOCKER=1` with `INSTALL_DOCKER=1` to skip `apt` and use the official installer only. |
 
 ---
 
