@@ -83,24 +83,25 @@ export async function runAgentTurnAnthropic(opts: RunAgentAnthropicOptions): Pro
 
   for (let i = 0; i < maxIterations; i++) {
     const response = await withLlmRetry(
-      () =>
-        anthropic.messages.create({
+      async () => {
+        const stream = anthropic.messages.stream({
           model: opts.model,
           max_tokens: 24_576,
           system: systemContent,
           tools: anthropicTools,
           messages,
           temperature: 0.2,
-        }),
+        });
+
+        stream.on('text', (text) => {
+          assistantVisible += text;
+          opts.onDelta?.(text);
+        });
+
+        return stream.finalMessage();
+      },
       opts.llmRetry
     );
-
-    for (const block of response.content) {
-      if (block.type === 'text') {
-        assistantVisible += block.text;
-        opts.onDelta?.(block.text);
-      }
-    }
 
     if (response.stop_reason !== 'tool_use') {
       messages.push({ role: 'assistant', content: response.content });

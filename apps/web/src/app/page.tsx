@@ -409,7 +409,10 @@ export default function HomePage() {
             setTerminalLog((t) => `${t}\n[sandbox] ${detail}\n`);
           }
           if (data.type === 'error') {
-            setError(data.message ?? 'Unknown error');
+            const errText = data.message ?? 'Unknown error';
+            setError(errText);
+            assistant += `\n⚠ Agent error: ${errText}`;
+            setStreaming(assistant);
           }
           if (data.type === 'done' && data.runId) {
             setLastRunId(data.runId);
@@ -418,10 +421,12 @@ export default function HomePage() {
         }
       }
 
-      setMessages((m) => [...m, { role: 'assistant', content: assistant || '(empty response)' }]);
+      setMessages((m) => [...m, { role: 'assistant', content: assistant || (error ? `⚠ ${error}` : '(empty response — check LLM keys & model in sidebar)') }]);
       setStreaming('');
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      const errMsg = e instanceof Error ? e.message : String(e);
+      setError(errMsg);
+      setMessages((m) => [...m, { role: 'assistant', content: `⚠ Error: ${errMsg}` }]);
     } finally {
       setBusy(false);
     }
