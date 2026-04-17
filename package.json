@@ -1,0 +1,29 @@
+{
+  "name": "novatrix",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @novatrix/web",
+    "start": "npm run start -w @novatrix/web",
+    "dev": "npm run dev -w @novatrix/web",
+    "lint": "npm run lint -w @novatrix/web",
+    "format": "prettier -w \"apps/**/*.{ts,tsx}\" \"packages/**/*.ts\" \"prisma/**/*.prisma\"",
+    "postinstall": "prisma generate --schema=./prisma/schema.prisma",
+    "db:generate": "prisma generate --schema=./prisma/schema.prisma",
+    "db:push": "prisma db push --schema=./prisma/schema.prisma",
+    "db:studio": "prisma studio --schema=./prisma/schema.prisma",
+    "worker": "npm run worker -w @novatrix/web"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.2.0"
+  },
+  "devDependencies": {
+    "prettier": "^3.4.2",
+    "prisma": "^6.2.0",
+    "typescript": "^5.7.2"
+  },
+  "packageManager": "npm@10.9.0"
+}

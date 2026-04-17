@@ -1,0 +1,34 @@
+# Tool inventory for agent / operators (extend over time)
+tier: T1
+tools:
+  - name: nuclei
+    binary: nuclei
+    license: MIT
+    source: https://github.com/projectdiscovery/nuclei
+  - name: httpx
+    binary: httpx
+    license: MIT
+    source: https://github.com/projectdiscovery/httpx
+  - name: subfinder
+    binary: subfinder
+    license: MIT
+    source: https://github.com/projectdiscovery/subfinder
+  - name: katana
+    binary: katana
+    license: MIT
+    source: https://github.com/projectdiscovery/katana
+  - name: dnsx
+    binary: dnsx
+    license: MIT
+    source: https://github.com/projectdiscovery/dnsx
+  - name: ffuf
+    binary: ffuf
+    license: MIT
+    source: https://github.com/ffuf/ffuf
+  - name: sqlmap
+    binary: sqlmap
+    license: GPL-2.0
+    source: https://github.com/sqlmapproject/sqlmap
+wordlists:
+  - name: SecLists
+    note: Mount read-only at /wordlists/seclists when needed

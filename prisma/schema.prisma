@@ -1,0 +1,168 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String    @id @default(cuid())
+  email     String?   @unique
+  /// RBAC: admin | member (Phase 3 governance)
+  role      String    @default("member")
+  createdAt DateTime  @default(now())
+  projects  Project[]
+  sessions  Session[]
+}
+
+model Project {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  targets     Target[]
+  sessions    Session[]
+  createdAt   DateTime @default(now())
+}
+
+model Target {
+  id          String   @id @default(cuid())
+  label       String
+  /// Allowed URL prefix (e.g. https://staging.example.com)
+  urlPattern  String
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sessions    Session[]
+  createdAt   DateTime @default(now())
+}
+
+model Session {
+  id            String        @id @default(cuid())
+  title         String        @default("Assessment")
+  projectId     String?
+  project       Project?      @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  targetId      String?
+  target        Target?       @relation(fields: [targetId], references: [id], onDelete: SetNull)
+  userId        String?
+  user          User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  messages      Message[]
+  runs          Run[]
+  memoryEntries MemoryEntry[]
+  auditLogs     AuditLog[]
+  schedules     Schedule[]
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+}
+
+/// Cadence-style assessments (Neo Scheduling doc) — BullMQ repeat when REDIS_URL set.
+model Schedule {
+  id         String    @id @default(cuid())
+  sessionId  String
+  session    Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  cronExpr   String    @default("0 */6 * * *")
+  prompt     String    @db.Text
+  enabled    Boolean   @default(true)
+  lastRunAt  DateTime?
+  createdAt  DateTime  @default(now())
+}
+
+/// Phase 2: Neo Memory — embeddings for retrieval (JSON array of floats; cosine in app).
+model MemoryEntry {
+  id        String   @id @default(cuid())
+  sessionId String
+  session   Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  content   String   @db.Text
+  embedding Json
+  source    String?
+  createdAt DateTime @default(now())
+
+  @@index([sessionId])
+}
+
+/// Phase 3: audit trail for tool / HTTP actions (Neo-style visibility).
+model AuditLog {
+  id        String   @id @default(cuid())
+  sessionId String?
+  session   Session? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  runId     String?
+  run       Run?     @relation(fields: [runId], references: [id], onDelete: SetNull)
+  kind      String
+  payload   Json?
+  createdAt DateTime @default(now())
+
+  @@index([sessionId])
+  @@index([runId])
+}
+
+enum MessageRole {
+  user
+  assistant
+  system
+  tool
+}
+
+model Message {
+  id        String      @id @default(cuid())
+  sessionId String
+  session   Session     @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  role      MessageRole
+  content   String      @db.Text
+  /// JSON: tool name, args, result summary for tool messages
+  meta      Json?
+  createdAt DateTime    @default(now())
+}
+
+enum RunStatus {
+  pending
+  running
+  completed
+  failed
+  cancelled
+}
+
+model Run {
+  id          String     @id @default(cuid())
+  sessionId   String
+  session     Session    @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  status      RunStatus  @default(pending)
+  summary     String?
+  error       String?
+  startedAt   DateTime   @default(now())
+  completedAt DateTime?
+  artifacts   Artifact[]
+  findings    Finding[]
+  auditLogs   AuditLog[]
+}
+
+model Artifact {
+  id        String   @id @default(cuid())
+  runId     String
+  run       Run      @relation(fields: [runId], references: [id], onDelete: Cascade)
+  kind      String
+  path      String
+  mimeType  String?
+  createdAt DateTime @default(now())
+}
+
+enum FindingSeverity {
+  info
+  low
+  medium
+  high
+  critical
+}
+
+model Finding {
+  id          String           @id @default(cuid())
+  runId       String
+  run         Run              @relation(fields: [runId], references: [id], onDelete: Cascade)
+  title       String
+  severity    FindingSeverity
+  description String           @db.Text
+  evidence    String?          @db.Text
+  payload     String?          @db.Text
+  createdAt   DateTime         @default(now())
+}

@@ -1,0 +1,29 @@
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+
+function parseTierAndTools(yaml: string): { tier: string; tools: string[] } {
+  const tierM = /^tier:\s*(\S+)/m.exec(yaml);
+  const tier = tierM?.[1] ?? 'unknown';
+  const tools: string[] = [];
+  const re = /^\s*-\s+name:\s*(.+)$/gm;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(yaml))) {
+    tools.push(m[1].trim());
+  }
+  return { tier, tools };
+}
+
+/** Human-readable catalog snippet for the system prompt (Neo-style capability awareness). */
+export async function loadToolCatalogSummary(manifestPath?: string): Promise<string> {
+  const p =
+    manifestPath ??
+    path.join(process.cwd(), '..', '..', 'infra', 'docker', 'tools.manifest.yaml');
+  try {
+    const raw = await readFile(p, 'utf8');
+    const { tier, tools } = parseTierAndTools(raw);
+    if (!tools.length) return `Tier ${tier} (manifest found but no tools parsed).`;
+    return `Tier ${tier}: ${tools.join(', ')}. Wordlists: mount SecLists read-only when fuzzing (see manifest note).`;
+  } catch {
+    return 'Tool manifest not found; assume common PD CLIs may be installed in the sandbox image.';
+  }
+}
