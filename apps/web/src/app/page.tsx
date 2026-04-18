@@ -491,7 +491,7 @@ export default function HomePage() {
       abortRef.current = null;
       void fetchSessionList();
     }
-  }, [sessionId, refreshFindings, buildLlmPayload, operatorContext, pushFeed, fetchSessionList]);
+  }, [input, busy, sessionId, refreshFindings, buildLlmPayload, operatorContext, pushFeed, fetchSessionList]);
 
   const stop = useCallback(() => {
     abortRef.current?.abort();
