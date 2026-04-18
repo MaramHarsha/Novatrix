@@ -301,7 +301,17 @@ export default function HomePage() {
 
   /* ─── Send message ─── */
   const send = useCallback(async () => {
-    if (!sessionId || !input.trim() || busy) return;
+    if (busy) {
+      setError('Wait for the current run to finish, or press Stop.');
+      return;
+    }
+    if (!sessionId) {
+      setError('No active session yet — wait for the sidebar to finish loading, or refresh the page.');
+      return;
+    }
+    if (!input.trim()) {
+      return;
+    }
     const userMsg = input.trim();
     setInput('');
     setError(null);
@@ -467,7 +477,8 @@ export default function HomePage() {
 
   const saveSettings = () => {
     if (typeof window === 'undefined') return;
-    window.localStorage.setItem('MUTATION_API_KEY', apiKeyInput.trim());
+    const key = apiKeyInput.trim();
+    window.localStorage.setItem('MUTATION_API_KEY', key);
     window.localStorage.setItem(LLM_LS.provider, llmProvider);
     window.localStorage.setItem(LLM_LS.openaiKey, llmOpenaiKey);
     window.localStorage.setItem(LLM_LS.openaiBaseUrl, llmOpenaiBaseUrl);
@@ -477,6 +488,10 @@ export default function HomePage() {
     window.localStorage.setItem(LLM_LS.embeddingModel, llmEmbeddingModel);
     setError(null);
     setSettingsOpen(false);
+    // No session usually means POST /api/sessions failed with 401 before the key was saved — reload to bootstrap again.
+    if (key && !sessionId) {
+      window.location.reload();
+    }
   };
 
   const applyScope = async () => {
@@ -926,9 +941,19 @@ export default function HomePage() {
             <input
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && void send()}
-              placeholder={sessionId ? 'Objective, command intent, or question…' : 'Initializing session…'}
-              disabled={!sessionId || busy}
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter' || e.shiftKey) return;
+                e.preventDefault();
+                void send();
+              }}
+              placeholder={
+                sessionsLoading
+                  ? 'Loading session…'
+                  : sessionId
+                    ? 'Objective, command intent, or question…'
+                    : 'Set Mutation API key in Settings if required, then refresh — or wait…'
+              }
+              disabled={!sessionId || busy || sessionsLoading}
               className="chat-input"
             />
             {busy ? (
@@ -936,7 +961,12 @@ export default function HomePage() {
                 Stop
               </button>
             ) : (
-              <button type="button" className="btn btn-primary" onClick={() => void send()} disabled={!sessionId || !input.trim()}>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => void send()}
+                disabled={!sessionId || !input.trim() || busy || sessionsLoading}
+              >
                 Send
               </button>
             )}
@@ -975,6 +1005,16 @@ export default function HomePage() {
       {error && (
         <div className="global-error">
           <span>{error}</span>
+          {(error.includes('Mutation API key') || error.includes('Could not load sessions')) && (
+            <button
+              type="button"
+              className="btn btn-sm"
+              style={{ marginLeft: 8 }}
+              onClick={() => window.location.reload()}
+            >
+              Reload page
+            </button>
+          )}
           <button type="button" className="error-dismiss" onClick={() => setError(null)}>
             ×
           </button>
