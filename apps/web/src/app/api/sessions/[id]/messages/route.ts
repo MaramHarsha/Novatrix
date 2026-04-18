@@ -1,3 +1,4 @@
+import { NextResponse } from 'next/server';
 import OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { runAgentTurn, runAgentTurnAnthropic, type FindingPayload } from '@novatrix/agent';
