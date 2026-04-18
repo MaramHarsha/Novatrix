@@ -1,7 +1,7 @@
 import type { SandboxConfig } from '@novatrix/sandbox';
 import type { Session } from '@prisma/client';
 
-export const DEFAULT_EXEGOL_IMAGE = 'nwodtuhs/exegol:web';
+export const DEFAULT_EXEGOL_IMAGE = 'nwodtuhs/exegol:web-3.1.6';
 
 export type SandboxProfiles = {
   novatrix: SandboxConfig | null;

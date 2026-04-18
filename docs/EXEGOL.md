@@ -12,7 +12,7 @@ The **Novatrix** image (`infra/docker/sandbox.Dockerfile`) bundles a **large but
 | Old or empty `novatrix-sandbox` image | Never rebuilt after `git pull` | Run **`bash scripts/docker/build-novatrix-sandbox.sh`** (or `docker build -f infra/docker/sandbox.Dockerfile -t novatrix-sandbox:latest .`) |
 | Scans cannot resolve DNS or reach targets | **`SANDBOX_DOCKER_NETWORK=none`** | Set **`bridge`** (globally in `.env` and/or per session in the UI) |
 | Tool exists in Exegol but not Novatrix | Expected | Enable **Exegol profile**, **Save sandbox**, **Pull images**, use `sandbox_profile: "exegol"` in `terminal_exec` |
-| Exegol pull fails / out of disk | Full image is **tens of GB** | Use a smaller tag (`light`, `web`) or free space; see [Docker Hub tags](https://hub.docker.com/r/nwodtuhs/exegol/tags) |
+| Exegol pull fails / out of disk | Full image is **tens of GB** | Use a smaller tag (`light-3.1.6`, `osint-3.1.6`, `free`) or free space; see [Docker Hub tags](https://hub.docker.com/r/nwodtuhs/exegol/tags) — bare `:web` was removed; use e.g. `web-3.1.6`. |
 
 ## Quick: Docker + Novatrix image
 
@@ -42,7 +42,7 @@ bash scripts/docker/pull-exegol.sh
 Then in the **web UI** (left rail):
 
 1. Enable **Exegol profile**.
-2. Override image if needed (default `nwodtuhs/exegol:web`).
+2. Override image if needed (default `nwodtuhs/exegol:web-3.1.6`).
 3. Set **network** to **bridge** if the container must reach the Internet or your lab.
 4. **Save sandbox** → **Pull images**.
 
@@ -54,7 +54,7 @@ If you want **only** Exegol (not the custom Novatrix image) for `SANDBOX_IMAGE`:
 
 ```env
 SANDBOX_MODE=docker
-SANDBOX_IMAGE=nwodtuhs/exegol:web
+SANDBOX_IMAGE=nwodtuhs/exegol:web-3.1.6
 SANDBOX_DOCKER_NETWORK=bridge
 ```
 

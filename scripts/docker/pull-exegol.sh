@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Pull a community Exegol image for use as the Exegol sandbox profile (large; tens of GB for full).
 # Usage:
-#   EXEGOL_TAG=web ./scripts/docker/pull-exegol.sh
-# Tags: web, light, full, free, ad, osint, nightly — see https://hub.docker.com/r/nwodtuhs/exegol/tags
+#   EXEGOL_TAG=web-3.1.6 ./scripts/docker/pull-exegol.sh
+# Tags: web-3.1.6, light-3.1.6, free, full-3.1.6, … — bare "web" was removed; see https://hub.docker.com/r/nwodtuhs/exegol/tags
 set -euo pipefail
-TAG="${EXEGOL_TAG:-web}"
+TAG="${EXEGOL_TAG:-web-3.1.6}"
 IMAGE="nwodtuhs/exegol:${TAG}"
 echo "Pulling ${IMAGE} (this can take a long time and several GB)…"
 docker pull "$IMAGE"

@@ -407,7 +407,8 @@ if [[ "${NOVATRIX_FULL_SETUP}" == "1" ]]; then
     fi
 
     if [[ "${PULL_EXEGOL}" == "1" ]]; then
-      ETAG="${EXEGOL_TAG:-web}"
+      # Docker Hub dropped the bare :web tag — use a versioned tag (override with EXEGOL_TAG=…).
+      ETAG="${EXEGOL_TAG:-web-3.1.6}"
       log "Docker: pulling nwodtuhs/exegol:${ETAG} (large)"
       docker_run pull "nwodtuhs/exegol:${ETAG}" ||
         log "WARNING: Exegol pull failed — try: docker pull nwodtuhs/exegol:${ETAG}"

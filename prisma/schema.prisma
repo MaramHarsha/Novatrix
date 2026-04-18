@@ -50,7 +50,7 @@ model Session {
   user          User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
   /// Per-session Docker sandbox: Tier-1 Novatrix image (null = use server SANDBOX_IMAGE).
   sandboxNovatrixImage   String?
-  /// Per-session Exegol image (null = nwodtuhs/exegol:web).
+  /// Per-session Exegol image (null = nwodtuhs/exegol:web-3.1.6).
   sandboxExegolImage     String?
   /// When SANDBOX_MODE=docker, run terminal/browser in this Novatrix-based image.
   sandboxEnableNovatrix  Boolean   @default(true)

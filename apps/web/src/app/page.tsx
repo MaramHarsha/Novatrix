@@ -637,7 +637,7 @@ export default function HomePage() {
           <em>do not exist on the host</em>. For real tooling: set{' '}
           <code className="inline-code">SANDBOX_MODE=docker</code> in server env, build{' '}
           <code className="inline-code">novatrix-sandbox:latest</code>, pull{' '}
-          <code className="inline-code">nwodtuhs/exegol:web</code> (or your tag), use <strong>bridge</strong> network, restart the app, then{' '}
+          <code className="inline-code">nwodtuhs/exegol:web-3.1.6</code> (or your tag), use <strong>bridge</strong> network, restart the app, then{' '}
           <strong>Pull images</strong> here.
         </div>
       )}
@@ -748,7 +748,7 @@ export default function HomePage() {
             <input
               value={sandboxExegolImage}
               onChange={(e) => setSandboxExegolImage(e.target.value)}
-              placeholder={sandboxCfg?.defaultExegolImage ?? 'nwodtuhs/exegol:web'}
+              placeholder={sandboxCfg?.defaultExegolImage ?? 'nwodtuhs/exegol:web-3.1.6'}
               className="input rail-input"
             />
             <label className="rail-label">Container network</label>

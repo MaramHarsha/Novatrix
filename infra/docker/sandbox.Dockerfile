@@ -1,7 +1,7 @@
 # Novatrix Tier-1+ sandbox — ProjectDiscovery stack + common web/network tooling
 # Build: docker build -f infra/docker/sandbox.Dockerfile -t novatrix-sandbox:latest .
 #
-# For 400+ preinstalled tools use Exegol instead: nwodtuhs/exegol:web (see docs/EXEGOL.md).
+# For 400+ preinstalled tools use Exegol instead: nwodtuhs/exegol:web-3.1.6 (see docs/EXEGOL.md).
 
 FROM golang:1.23-bookworm AS gobin
 ENV CGO_ENABLED=0
@@ -27,14 +27,14 @@ RUN go install -v github.com/tomnomnom/anew@latest
 
 FROM debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Core tooling first — masscan/nikto are installed in a follow-up RUN because some
+# Debian mirrors / builder arches occasionally omit a package name (fails whole install if one misses).
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates curl bash git jq python3 python3-pip chromium \
     nmap \
     dirb \
-    nikto \
     hydra \
     wfuzz \
-    masscan \
     sslscan \
     whatweb \
     whois \
@@ -48,6 +48,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpcap0.8 \
     zip unzip xz-utils \
     && rm -rf /var/lib/apt/lists/*
+
+# Optional scanners — apt may omit one name on some mirrors/arches; image still builds.
+RUN apt-get update \
+  && (DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends masscan nikto || true) \
+  && rm -rf /var/lib/apt/lists/*
 
 # naabu needs libpcap at runtime for some scan modes
 
