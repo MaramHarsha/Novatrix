@@ -2,33 +2,34 @@
 # =============================================================================
 # Novatrix — Ubuntu 22.04 / 24.04 LTS bootstrap (AWS EC2, bare metal, WSL2)
 # =============================================================================
-# Installs Node.js 20 LTS, build tools, OpenSSL (Prisma), optional Docker + Compose.
+# One command from the repo (or after clone): system packages, Node 20, Docker,
+# Postgres+Redis (compose), npm install, Prisma db push, production build, PM2.
 #
-# --- Recommended: one-shot EC2 setup (clone first) ---------------------------
+# --- One shot (from clone) ---------------------------------------------------
 #   git clone https://github.com/MaramHarsha/Novatrix.git && cd Novatrix
 #   chmod +x scripts/ubuntu/setup-ubuntu.sh
-#   INSTALL_DOCKER=1 NOVATRIX_FULL_SETUP=1 ./scripts/ubuntu/setup-ubuntu.sh
+#   ./scripts/ubuntu/setup-ubuntu.sh
 #
-# --- Optional: clone from this script ----------------------------------------
-#   INSTALL_DOCKER=1 NOVATRIX_CLONE_URL="https://github.com/MaramHarsha/Novatrix.git" \
-#     NOVATRIX_FULL_SETUP=1 ./scripts/ubuntu/setup-ubuntu.sh
-#   (uses NOVATRIX_DIR, default ~/Novatrix)
+# Or clone via env (starts in empty directory):
+#   NOVATRIX_CLONE_URL="https://github.com/MaramHarsha/Novatrix.git" ./scripts/ubuntu/setup-ubuntu.sh
 #
-# Environment variables
-#   INSTALL_DOCKER=1       Install Docker Engine + Compose (prefers Ubuntu docker.io; if that
-#                          fails with containerd conflicts, runs https://get.docker.com).
-#   DOCKER_USE_GET_DOCKER=1 Skip apt and use get.docker.com only (when you know apt will conflict).
-#   NOVATRIX_FULL_SETUP=1  After deps: docker compose up -d, wait for Postgres,
-#                          npm ci, prisma db push, next build (from repo root).
-#   NOVATRIX_CLONE_URL=…   Git HTTPS URL to clone when repo not present.
-#   NOVATRIX_DIR=…         Clone destination (default: $HOME/Novatrix).
-#   SKIP_DB_PUSH=1         Skip database schema push (run `npm run db:push` later).
-#   SKIP_BUILD=1           Skip `npm run build` (e.g. only DB + deps).
-#   SKIP_DOCKER_COMPOSE=1  Skip `docker compose up -d` even if Docker exists.
-#   PULL_EXEGOL=1          After Docker works: `docker pull nwodtuhs/exegol:${EXEGOL_TAG:-web}` (large).
-#   BUILD_NOVATRIX_SANDBOX=1  Build `novatrix-sandbox:latest` from infra/docker/sandbox.Dockerfile (slow).
+# Defaults (override by setting the var explicitly, e.g. INSTALL_DOCKER=0):
+#   INSTALL_DOCKER=1       when unset — install Docker Engine + Compose plugin.
+#   NOVATRIX_FULL_SETUP=1  when unset and cwd is the monorepo root — compose, npm, db, build.
+#   INSTALL_PM2=1          when unset and full setup runs — `npm install -g pm2`.
 #
-# LLM API keys can stay empty in .env if you use the web UI (localStorage).
+# Other environment variables
+#   DOCKER_USE_GET_DOCKER=1 Skip apt Docker packages; use https://get.docker.com only.
+#   NOVATRIX_DIR=…         Clone destination when using NOVATRIX_CLONE_URL (default ~/Novatrix).
+#   SKIP_DB_PUSH=1         Skip prisma db push.
+#   SKIP_BUILD=1           Skip next build.
+#   SKIP_DOCKER_COMPOSE=1  Skip docker compose up even if Docker exists.
+#   FORCE_SYNC_ENV_PRODUCTION=1  Always copy root .env → apps/web/.env.production (default:
+#                          copy only if apps/web/.env.production is missing).
+#   PULL_EXEGOL=1          docker pull nwodtuhs/exegol:${EXEGOL_TAG:-web} (large).
+#   BUILD_NOVATRIX_SANDBOX=1  docker build novatrix-sandbox:latest (slow).
+#
+# LLM keys can stay empty in .env if you use the web UI (sidebar → LLM).
 # =============================================================================
 
 set -euo pipefail
@@ -39,6 +40,14 @@ if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
 fi
 
 log() { printf '\n==> %s\n' "$*"; }
+
+# Resolve monorepo root when the script lives at scripts/ubuntu/setup-ubuntu.sh
+SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+REPO_CANDIDATE="$(cd "$SCRIPT_DIR/../.." && pwd)"
+if [[ -f "${REPO_CANDIDATE}/package.json" ]] && [[ -f "${REPO_CANDIDATE}/prisma/schema.prisma" ]] && [[ -d "${REPO_CANDIDATE}/apps/web" ]]; then
+  cd "$REPO_CANDIDATE"
+fi
 
 docker_compose() {
   if docker info >/dev/null 2>&1; then
@@ -71,6 +80,22 @@ wait_for_postgres() {
   return 1
 }
 
+install_pm2_global() {
+  if [[ "${INSTALL_PM2:-0}" != "1" ]]; then
+    return 0
+  fi
+  if command -v pm2 >/dev/null 2>&1; then
+    log "PM2 already installed: $(command -v pm2)"
+    return 0
+  fi
+  log "Installing PM2 globally (npm install -g pm2)"
+  if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+    npm install -g pm2
+  else
+    $SUDO npm install -g pm2
+  fi
+}
+
 # --- Optional clone ----------------------------------------------------------------
 if [[ -n "${NOVATRIX_CLONE_URL:-}" ]]; then
   DEST="${NOVATRIX_DIR:-$HOME/Novatrix}"
@@ -85,8 +110,29 @@ if [[ -n "${NOVATRIX_CLONE_URL:-}" ]]; then
   fi
 fi
 
-if [[ "${NOVATRIX_FULL_SETUP:-}" == "1" ]] && ! is_novatrix_repo; then
-  log "ERROR: NOVATRIX_FULL_SETUP=1 must run from the Novatrix repo root (after cd), or set NOVATRIX_CLONE_URL to clone first."
+# --- Defaults: full stack when running inside the checkout (no extra env needed) ---
+if [[ -z "${INSTALL_DOCKER+x}" ]]; then
+  INSTALL_DOCKER=1
+fi
+if [[ -z "${NOVATRIX_FULL_SETUP+x}" ]]; then
+  if is_novatrix_repo; then
+    NOVATRIX_FULL_SETUP=1
+  else
+    NOVATRIX_FULL_SETUP=0
+  fi
+fi
+if [[ -z "${INSTALL_PM2+x}" ]]; then
+  if [[ "${NOVATRIX_FULL_SETUP}" == "1" ]]; then
+    INSTALL_PM2=1
+  else
+    INSTALL_PM2=0
+  fi
+fi
+
+if [[ "${NOVATRIX_FULL_SETUP}" == "1" ]] && ! is_novatrix_repo; then
+  log "ERROR: Full setup needs the Novatrix repo root. Example:"
+  log "  git clone https://github.com/MaramHarsha/Novatrix.git && cd Novatrix && ./scripts/ubuntu/setup-ubuntu.sh"
+  log "Or: NOVATRIX_CLONE_URL=https://github.com/MaramHarsha/Novatrix.git ./path/to/setup-ubuntu.sh"
   exit 1
 fi
 
@@ -119,6 +165,8 @@ if [[ "$NEED_NODE" -eq 1 ]]; then
 fi
 
 log "Node: $(node -v)  npm: $(npm -v)"
+
+install_pm2_global
 
 # --- Docker (optional) ---------------------------------------------------------------
 # Ubuntu docker.io uses package "containerd"; Docker Inc. repo uses "containerd.io" — they conflict.
@@ -159,13 +207,13 @@ install_docker_stack() {
   fi
 }
 
-if [[ "${INSTALL_DOCKER:-}" == "1" ]]; then
+if [[ "${INSTALL_DOCKER}" == "1" ]]; then
   install_docker_stack
 fi
 
 # --- Full application setup (repo root) ---------------------------------------------
-if [[ "${NOVATRIX_FULL_SETUP:-}" == "1" ]]; then
-  log "NOVATRIX_FULL_SETUP: installing app dependencies and services"
+if [[ "${NOVATRIX_FULL_SETUP}" == "1" ]]; then
+  log "Full setup: dependencies, DB, production build"
   if ! is_novatrix_repo; then
     log "ERROR: not at Novatrix repo root."
     exit 1
@@ -176,6 +224,15 @@ if [[ "${NOVATRIX_FULL_SETUP:-}" == "1" ]]; then
     cp .env.example .env
   fi
 
+  if [[ -f .env ]] && [[ -d apps/web ]]; then
+    if [[ ! -f apps/web/.env.production ]] || [[ "${FORCE_SYNC_ENV_PRODUCTION:-}" == "1" ]]; then
+      log "Copying .env → apps/web/.env.production (Next.js / PM2)"
+      cp .env apps/web/.env.production
+    else
+      log "Keeping existing apps/web/.env.production (set FORCE_SYNC_ENV_PRODUCTION=1 to overwrite from .env)"
+    fi
+  fi
+
   if [[ "${SKIP_DOCKER_COMPOSE:-}" != "1" ]] && command -v docker >/dev/null 2>&1; then
     if [[ -f docker-compose.yml ]]; then
       log "Starting Postgres + Redis (docker compose up -d)"
@@ -183,7 +240,7 @@ if [[ "${NOVATRIX_FULL_SETUP:-}" == "1" ]]; then
       wait_for_postgres || true
     fi
   elif [[ "${SKIP_DOCKER_COMPOSE:-}" != "1" ]]; then
-    log "WARNING: Docker not installed; skip docker compose. Set DATABASE_URL to your Postgres and run db:push manually."
+    log "WARNING: Docker not installed; skip docker compose. Set DATABASE_URL in .env to your Postgres, then: npm run db:push"
   fi
 
   log "npm install (root workspace; prefers npm ci when lockfile matches)"
@@ -232,9 +289,11 @@ fi
 
 log "Done."
 echo ""
-echo "Next steps:"
-echo "  • Dev:     npm run dev     → http://localhost:3000"
-echo "  • Prod:    cp .env apps/web/.env.production   # optional; or export env for PM2"
-echo "             pm2 start ecosystem.config.cjs"
-echo "  • Docs:    docs/DEPLOY-AWS-EC2.md  ·  docs/GITHUB-WORKFLOWS-BEGINNER.md"
+echo "Novatrix is ready."
+echo "  • Dev:  npm run dev   → http://localhost:3000"
+echo "  • Prod: pm2 start ecosystem.config.cjs   # from repo root (pm2 installed by this script when full setup ran)"
+echo "          pm2 save && pm2 startup   # optional: survive reboot"
+echo "  • Docs: docs/DEPLOY-AWS-EC2.md"
+echo ""
+echo "Optional: Docker sandbox image for scanners — BUILD_NOVATRIX_SANDBOX=1 $0   (slow first build)"
 echo ""
