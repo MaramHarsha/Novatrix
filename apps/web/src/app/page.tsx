@@ -4,12 +4,19 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
-  type CSSProperties,
   type ReactNode,
 } from 'react';
 
-type ChatLine = { role: 'user' | 'assistant'; content: string };
+/* ─── Types ─── */
+type ToolEvent = { id: number; name: string; args?: string; result?: string; streaming?: string };
+type ChatBlock =
+  | { kind: 'user'; text: string }
+  | { kind: 'assistant'; text: string }
+  | { kind: 'tool'; tool: ToolEvent }
+  | { kind: 'finding'; data: Finding }
+  | { kind: 'error'; text: string };
 
 type Finding = {
   id: string;
@@ -18,9 +25,9 @@ type Finding = {
   description: string;
   evidence?: string | null;
   payload?: string | null;
-  run?: { id: string; startedAt: string; status: string };
 };
 
+/* ─── Helpers ─── */
 function authHeaders(): HeadersInit {
   const key =
     typeof window !== 'undefined' ? window.localStorage.getItem('MUTATION_API_KEY') ?? '' : '';
@@ -37,37 +44,23 @@ const LLM_LS = {
   embeddingModel: 'NOVATRIX_EMBEDDING_MODEL',
 } as const;
 
+let toolIdSeq = 0;
+
+/* ─── Main ─── */
 export default function HomePage() {
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [lastRunId, setLastRunId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<ChatLine[]>([]);
+  const [blocks, setBlocks] = useState<ChatBlock[]>([]);
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState('');
-  const [terminalLog, setTerminalLog] = useState('');
-  const [browserLog, setBrowserLog] = useState('');
-  const [apiLog, setApiLog] = useState('');
-  const [networkLog, setNetworkLog] = useState('');
-  const [findings, setFindings] = useState<Finding[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [integrations, setIntegrations] = useState<Record<string, { configured: boolean }> | null>(null);
-  const [scopeUrl, setScopeUrl] = useState('');
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [findings, setFindings] = useState<Finding[]>([]);
+  const abortRef = useRef<AbortController | null>(null);
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
+
   const [apiKeyInput, setApiKeyInput] = useState('');
-  const [scheduleCron, setScheduleCron] = useState('0 */6 * * *');
-  const [schedulePrompt, setSchedulePrompt] = useState('Re-run passive httpx fingerprint on the primary target.');
-  const [sbDefaults, setSbDefaults] = useState<{
-    sandboxMode: string;
-    defaultNovatrixImage: string;
-    defaultExegolImage: string;
-    defaultDockerNetwork: string;
-  } | null>(null);
-  const [sbNovatrixEnabled, setSbNovatrixEnabled] = useState(true);
-  const [sbExegolEnabled, setSbExegolEnabled] = useState(false);
-  const [sbNovatrixImage, setSbNovatrixImage] = useState('');
-  const [sbExegolImage, setSbExegolImage] = useState('');
-  const [sbNetwork, setSbNetwork] = useState('');
-  const [sbSaving, setSbSaving] = useState(false);
-  const [sbPulling, setSbPulling] = useState(false);
+  const [scopeUrl, setScopeUrl] = useState('');
   const [llmProvider, setLlmProvider] = useState<'openai' | 'anthropic'>('openai');
   const [llmOpenaiKey, setLlmOpenaiKey] = useState('');
   const [llmOpenaiBaseUrl, setLlmOpenaiBaseUrl] = useState('');
@@ -76,19 +69,13 @@ export default function HomePage() {
   const [llmAnthropicModel, setLlmAnthropicModel] = useState('');
   const [llmEmbeddingModel, setLlmEmbeddingModel] = useState('');
 
-  const screenshotUrl = useMemo(() => {
-    if (!lastRunId) return null;
-    return `/api/runs/${lastRunId}/artifact-file/browser/snap.png`;
-  }, [lastRunId]);
-
-  const refreshFindings = useCallback(async (sid: string) => {
-    const r = await fetch(`/api/sessions/${sid}/findings`);
-    if (r.ok) {
-      const data = (await r.json()) as Finding[];
-      setFindings(data);
-    }
+  const scrollToBottom = useCallback(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, []);
 
+  useEffect(scrollToBottom, [blocks, streaming, scrollToBottom]);
+
+  /* Load localStorage */
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const k = window.localStorage.getItem('MUTATION_API_KEY');
@@ -103,83 +90,28 @@ export default function HomePage() {
     setLlmEmbeddingModel(window.localStorage.getItem(LLM_LS.embeddingModel) ?? '');
   }, []);
 
-  useEffect(() => {
-    fetch('/api/integrations')
-      .then((r) => r.json())
-      .then(setIntegrations)
-      .catch(() => setIntegrations(null));
-  }, []);
-
+  /* Create session */
   useEffect(() => {
     fetch('/api/sessions', { method: 'POST', headers: { ...authHeaders() } })
       .then((r) => {
-        if (!r.ok) throw new Error(r.status === 401 ? 'Set mutation API key in header / local storage' : 'session');
+        if (!r.ok) throw new Error(r.status === 401 ? 'Set mutation API key first' : 'Session error');
         return r.json();
       })
       .then((d: { id: string }) => setSessionId(d.id))
       .catch((e: Error) => setError(e.message));
   }, []);
 
+  /* Load findings */
+  const refreshFindings = useCallback(async (sid: string) => {
+    const r = await fetch(`/api/sessions/${sid}/findings`);
+    if (r.ok) setFindings((await r.json()) as Finding[]);
+  }, []);
+
   useEffect(() => {
-    if (!sessionId) return;
-    void refreshFindings(sessionId);
+    if (sessionId) void refreshFindings(sessionId);
   }, [sessionId, refreshFindings]);
 
-  useEffect(() => {
-    if (!sessionId) return;
-    void (async () => {
-      try {
-        const [cfgRes, sessRes] = await Promise.all([
-          fetch('/api/sandbox-config'),
-          fetch(`/api/sessions/${sessionId}`),
-        ]);
-        if (cfgRes.ok) {
-          const cfg = (await cfgRes.json()) as {
-            sandboxMode: string;
-            defaultNovatrixImage: string;
-            defaultExegolImage: string;
-            defaultDockerNetwork: string;
-          };
-          setSbDefaults(cfg);
-        }
-        if (sessRes.ok) {
-          const sess = (await sessRes.json()) as {
-            sandboxEnableNovatrix?: boolean;
-            sandboxEnableExegol?: boolean;
-            sandboxNovatrixImage?: string | null;
-            sandboxExegolImage?: string | null;
-            sandboxDockerNetwork?: string | null;
-          };
-          setSbNovatrixEnabled(sess.sandboxEnableNovatrix !== false);
-          setSbExegolEnabled(!!sess.sandboxEnableExegol);
-          setSbNovatrixImage(sess.sandboxNovatrixImage ?? '');
-          setSbExegolImage(sess.sandboxExegolImage ?? '');
-          setSbNetwork(sess.sandboxDockerNetwork ?? '');
-        }
-      } catch {
-        /* ignore */
-      }
-    })();
-  }, [sessionId]);
-
-  const saveApiKey = () => {
-    window.localStorage.setItem('MUTATION_API_KEY', apiKeyInput.trim());
-    setError(null);
-  };
-
-  const saveLlmToBrowser = () => {
-    if (typeof window === 'undefined') return;
-    window.localStorage.setItem(LLM_LS.provider, llmProvider);
-    window.localStorage.setItem(LLM_LS.openaiKey, llmOpenaiKey);
-    window.localStorage.setItem(LLM_LS.openaiBaseUrl, llmOpenaiBaseUrl);
-    window.localStorage.setItem(LLM_LS.openaiModel, llmOpenaiModel);
-    window.localStorage.setItem(LLM_LS.anthropicKey, llmAnthropicKey);
-    window.localStorage.setItem(LLM_LS.anthropicModel, llmAnthropicModel);
-    window.localStorage.setItem(LLM_LS.embeddingModel, llmEmbeddingModel);
-    setError(null);
-  };
-
-  const buildLlmRequestPayload = useCallback(() => {
+  const buildLlmPayload = useCallback(() => {
     const llm: Record<string, string> = { provider: llmProvider };
     if (llmOpenaiKey.trim()) llm.openaiApiKey = llmOpenaiKey.trim();
     if (llmOpenaiBaseUrl.trim()) llm.openaiBaseUrl = llmOpenaiBaseUrl.trim();
@@ -188,135 +120,29 @@ export default function HomePage() {
     if (llmAnthropicModel.trim()) llm.anthropicModel = llmAnthropicModel.trim();
     if (llmEmbeddingModel.trim()) llm.embeddingModel = llmEmbeddingModel.trim();
     return llm;
-  }, [
-    llmProvider,
-    llmOpenaiKey,
-    llmOpenaiBaseUrl,
-    llmOpenaiModel,
-    llmAnthropicKey,
-    llmAnthropicModel,
-    llmEmbeddingModel,
-  ]);
+  }, [llmProvider, llmOpenaiKey, llmOpenaiBaseUrl, llmOpenaiModel, llmAnthropicKey, llmAnthropicModel, llmEmbeddingModel]);
 
-  const applyScope = async () => {
-    if (!sessionId || !scopeUrl.trim()) return;
-    setError(null);
-    try {
-      let projectId: string;
-      const lp = await fetch('/api/projects');
-      const projects = lp.ok ? ((await lp.json()) as { id: string }[]) : [];
-      if (projects.length) {
-        projectId = projects[0].id;
-      } else {
-        const cr = await fetch('/api/projects', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...authHeaders() },
-          body: JSON.stringify({ name: 'Default program' }),
-        });
-        if (!cr.ok) throw new Error('Could not create project');
-        const p = (await cr.json()) as { id: string };
-        projectId = p.id;
-      }
-      const tr = await fetch(`/api/projects/${projectId}/targets`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ label: 'Primary target', urlPattern: scopeUrl.trim() }),
-      });
-      if (!tr.ok) throw new Error('Could not create target');
-      const t = (await tr.json()) as { id: string };
-      const pr = await fetch(`/api/sessions/${sessionId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ targetId: t.id }),
-      });
-      if (!pr.ok) throw new Error('Could not attach target to session');
-      await refreshFindings(sessionId);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  };
-
-  const saveSandboxSettings = async () => {
-    if (!sessionId) return;
-    setSbSaving(true);
-    setError(null);
-    try {
-      const r = await fetch(`/api/sessions/${sessionId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({
-          sandboxEnableNovatrix: sbNovatrixEnabled,
-          sandboxEnableExegol: sbExegolEnabled,
-          sandboxNovatrixImage: sbNovatrixImage.trim() || null,
-          sandboxExegolImage: sbExegolImage.trim() || null,
-          sandboxDockerNetwork: sbNetwork.trim() ? sbNetwork.trim() : null,
-        }),
-      });
-      if (!r.ok) {
-        const j = (await r.json().catch(() => ({}))) as { error?: string };
-        throw new Error(j.error ?? 'Sandbox save failed');
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSbSaving(false);
-    }
-  };
-
-  const pullSandboxImagesNow = async () => {
-    if (!sessionId) return;
-    setSbPulling(true);
-    setError(null);
-    try {
-      const r = await fetch(`/api/sessions/${sessionId}/sandbox/pull`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({}),
-      });
-      const j = (await r.json()) as { results?: { image: string; ok: boolean; error?: string }[]; error?: string };
-      if (!r.ok) throw new Error(j.error ?? 'Pull failed');
-      const lines = (j.results ?? []).map((x) => `${x.image}: ${x.ok ? 'ok' : x.error ?? 'fail'}`).join('\n');
-      setTerminalLog((t) => `${t}\n\n--- docker pull (manual) ---\n${lines}\n`);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSbPulling(false);
-    }
-  };
-
-  const createSchedule = async () => {
-    if (!sessionId) return;
-    setError(null);
-    try {
-      const r = await fetch('/api/schedules', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ sessionId, cronExpr: scheduleCron, prompt: schedulePrompt }),
-      });
-      if (!r.ok) throw new Error('Schedule create failed');
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  };
-
+  /* ─── Send message ─── */
   const send = useCallback(async () => {
     if (!sessionId || !input.trim() || busy) return;
     const userMsg = input.trim();
     setInput('');
     setError(null);
-    setMessages((m) => [...m, { role: 'user', content: userMsg }]);
+    setBlocks((b) => [...b, { kind: 'user', text: userMsg }]);
     setStreaming('');
-    setTerminalLog('');
-    setBrowserLog('');
-    setApiLog('');
-    setNetworkLog('');
     setBusy(true);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    const activeTools = new Map<string, number>();
 
     try {
       const res = await fetch(`/api/sessions/${sessionId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ content: userMsg, llm: buildLlmRequestPayload() }),
+        body: JSON.stringify({ content: userMsg, llm: buildLlmPayload() }),
+        signal: controller.signal,
       });
 
       if (!res.ok) {
@@ -337,529 +163,689 @@ export default function HomePage() {
         buffer += dec.decode(value, { stream: true });
         const parts = buffer.split('\n\n');
         buffer = parts.pop() ?? '';
-        for (const block of parts) {
-          const line = block.trim();
+        for (const raw of parts) {
+          const line = raw.trim();
           if (!line.startsWith('data: ')) continue;
-          let data: {
-            type?: string;
-            text?: string;
-            name?: string;
-            result?: string;
-            message?: string;
-            finding?: unknown;
-            chunk?: string;
-            stream?: string;
-            method?: string;
-            url?: string;
-            preview?: string;
-            runId?: string;
-            line?: string;
-            status?: string;
-            images?: string[];
-            results?: { image: string; ok: boolean; error?: string }[];
-          };
-          try {
-            data = JSON.parse(line.slice(6)) as typeof data;
-          } catch {
-            continue;
-          }
-          if (data.type === 'delta' && data.text) {
-            assistant += data.text;
+          let data: Record<string, unknown>;
+          try { data = JSON.parse(line.slice(6)) as Record<string, unknown>; } catch { continue; }
+
+          const type = data.type as string | undefined;
+
+          if (type === 'delta' && data.text) {
+            assistant += data.text as string;
             setStreaming(assistant);
           }
-          if (data.type === 'tool_stream' && data.chunk && data.name) {
-            const ch = data.chunk;
-            if (data.name === 'terminal_exec') {
-              setTerminalLog((t) => t + ch);
-            }
-            if (data.name === 'browser_navigate') {
-              setBrowserLog((t) => t + ch);
-            }
-          }
-          if (data.type === 'tool' && data.name) {
-            const chunk = data.result ?? '';
-            if (data.name === 'terminal_exec') {
-              setTerminalLog((t) => `${t}\n\n--- ${data.name} (complete) ---\n${chunk.slice(0, 12000)}`);
-            } else if (data.name === 'browser_navigate') {
-              setBrowserLog((t) => `${t}\n\n--- ${data.name} ---\n${chunk.slice(0, 8000)}`);
+
+          if (type === 'tool_stream' && data.name && data.chunk) {
+            const name = data.name as string;
+            let tid = activeTools.get(name);
+            if (tid === undefined) {
+              tid = ++toolIdSeq;
+              activeTools.set(name, tid);
+              setBlocks((b) => [...b, { kind: 'tool', tool: { id: tid!, name, streaming: data.chunk as string } }]);
             } else {
-              setTerminalLog((t) => `${t}\n\n--- ${data.name} ---\n${chunk.slice(0, 8000)}`);
+              setBlocks((b) =>
+                b.map((bl) =>
+                  bl.kind === 'tool' && bl.tool.id === tid
+                    ? { ...bl, tool: { ...bl.tool, streaming: (bl.tool.streaming ?? '') + (data.chunk as string) } }
+                    : bl
+                )
+              );
             }
           }
-          if (data.type === 'finding' && data.finding) {
-            setTerminalLog((t) => `${t}\n\n[FINDING] ${JSON.stringify(data.finding, null, 2)}`);
+
+          if (type === 'tool' && data.name) {
+            const name = data.name as string;
+            const result = (data.result as string) ?? '';
+            const existingTid = activeTools.get(name);
+            if (existingTid !== undefined) {
+              setBlocks((b) =>
+                b.map((bl) =>
+                  bl.kind === 'tool' && bl.tool.id === existingTid
+                    ? { ...bl, tool: { ...bl.tool, result, streaming: undefined } }
+                    : bl
+                )
+              );
+              activeTools.delete(name);
+            } else {
+              const tid = ++toolIdSeq;
+              setBlocks((b) => [...b, { kind: 'tool', tool: { id: tid, name, result } }]);
+            }
           }
-          if (data.type === 'api') {
-            setApiLog(
-              (a) =>
-                `${a}\n${data.method ?? ''} ${data.url ?? ''}\n${(data.preview ?? '').slice(0, 2000)}\n---\n`
-            );
+
+          if (type === 'finding' && data.finding) {
+            const f = data.finding as Finding;
+            setBlocks((b) => [...b, { kind: 'finding', data: f }]);
           }
-          if (data.type === 'network' && data.line) {
-            setNetworkLog((n) => `${n}${data.line}\n`);
+
+          if (type === 'error') {
+            const msg = (data.message as string) ?? 'Unknown error';
+            setError(msg);
+            setBlocks((b) => [...b, { kind: 'error', text: msg }]);
           }
-          if (data.type === 'browser' && data.preview) {
-            setBrowserLog((b) => `${b}\n${(data.preview ?? '').slice(0, 6000)}`);
-          }
-          if (data.type === 'sandbox_pull') {
-            const detail =
-              data.status === 'started'
-                ? `pull started: ${(data.images ?? []).join(', ')}`
-                : `pull ${data.status ?? ''}: ${JSON.stringify(data.results ?? [])}`;
-            setTerminalLog((t) => `${t}\n[sandbox] ${detail}\n`);
-          }
-          if (data.type === 'error') {
-            const errText = data.message ?? 'Unknown error';
-            setError(errText);
-            assistant += `\n⚠ Agent error: ${errText}`;
-            setStreaming(assistant);
-          }
-          if (data.type === 'done' && data.runId) {
-            setLastRunId(data.runId);
+
+          if (type === 'done' && data.runId) {
             void refreshFindings(sessionId);
           }
         }
       }
 
-      setMessages((m) => [...m, { role: 'assistant', content: assistant || (error ? `⚠ ${error}` : '(empty response — check LLM keys & model in sidebar)') }]);
+      if (assistant.trim()) {
+        setBlocks((b) => [...b, { kind: 'assistant', text: assistant }]);
+      } else if (!error) {
+        setBlocks((b) => [...b, { kind: 'assistant', text: '(Agent completed — no text output)' }]);
+      }
       setStreaming('');
     } catch (e) {
-      const errMsg = e instanceof Error ? e.message : String(e);
-      setError(errMsg);
-      setMessages((m) => [...m, { role: 'assistant', content: `⚠ Error: ${errMsg}` }]);
+      if ((e as Error).name === 'AbortError') {
+        setBlocks((b) => [...b, { kind: 'error', text: 'Stopped by user.' }]);
+      } else {
+        const msg = e instanceof Error ? e.message : String(e);
+        setError(msg);
+        setBlocks((b) => [...b, { kind: 'error', text: msg }]);
+      }
     } finally {
       setBusy(false);
+      abortRef.current = null;
     }
-  }, [sessionId, input, busy, refreshFindings, buildLlmRequestPayload]);
+  }, [sessionId, input, busy, error, refreshFindings, buildLlmPayload]);
 
+  const stop = useCallback(() => {
+    abortRef.current?.abort();
+  }, []);
+
+  /* ─── Settings actions ─── */
+  const saveSettings = () => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem('MUTATION_API_KEY', apiKeyInput.trim());
+    window.localStorage.setItem(LLM_LS.provider, llmProvider);
+    window.localStorage.setItem(LLM_LS.openaiKey, llmOpenaiKey);
+    window.localStorage.setItem(LLM_LS.openaiBaseUrl, llmOpenaiBaseUrl);
+    window.localStorage.setItem(LLM_LS.openaiModel, llmOpenaiModel);
+    window.localStorage.setItem(LLM_LS.anthropicKey, llmAnthropicKey);
+    window.localStorage.setItem(LLM_LS.anthropicModel, llmAnthropicModel);
+    window.localStorage.setItem(LLM_LS.embeddingModel, llmEmbeddingModel);
+    setError(null);
+    setSettingsOpen(false);
+  };
+
+  const applyScope = async () => {
+    if (!sessionId || !scopeUrl.trim()) return;
+    setError(null);
+    try {
+      let projectId: string;
+      const lp = await fetch('/api/projects');
+      const projects = lp.ok ? ((await lp.json()) as { id: string }[]) : [];
+      if (projects.length) {
+        projectId = projects[0].id;
+      } else {
+        const cr = await fetch('/api/projects', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify({ name: 'Default program' }),
+        });
+        if (!cr.ok) throw new Error('Could not create project');
+        projectId = ((await cr.json()) as { id: string }).id;
+      }
+      const tr = await fetch(`/api/projects/${projectId}/targets`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ label: 'Primary target', urlPattern: scopeUrl.trim() }),
+      });
+      if (!tr.ok) throw new Error('Could not create target');
+      const t = (await tr.json()) as { id: string };
+      await fetch(`/api/sessions/${sessionId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ targetId: t.id }),
+      });
+      setSettingsOpen(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  /* ─── Render ─── */
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
-      <header
-        style={{
-          padding: '0.85rem 1.25rem',
-          borderBottom: '1px solid var(--border)',
-          background: 'var(--panel)',
-          display: 'flex',
-          flexWrap: 'wrap',
-          gap: '1rem',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-        }}
-      >
-        <div>
-          <h1 style={{ margin: 0, fontSize: '1.2rem', fontWeight: 650 }}>Novatrix</h1>
-          <p style={{ margin: '0.35rem 0 0', fontSize: '0.82rem', color: 'var(--muted)', maxWidth: 720 }}>
-            Authorized security assessments: chat objective, isolated sandbox execution, live terminal stream,
-            HTTP/API trace, evidence-backed findings. Set LLM keys and models in the sidebar (stored in the browser) or
-            via server <code>.env</code>; optional <code>MUTATION_API_KEY</code> for mutating APIs; configure scope below.
-          </p>
+    <div className="app-shell">
+      {/* Header */}
+      <header className="app-header">
+        <div className="header-left">
+          <h1 className="logo">Novatrix</h1>
+          <span className="tagline">Autonomous Security Assessment</span>
         </div>
-        <div style={{ fontSize: '0.75rem', color: 'var(--muted)', textAlign: 'right' }}>
-          {integrations && (
-            <div style={{ display: 'flex', gap: '0.65rem', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-              {Object.entries(integrations).map(([k, v]) => (
-                <span key={k}>
-                  {k}:{' '}
-                  <span style={{ color: v.configured ? '#6ee7b7' : '#fca5a5' }}>
-                    {v.configured ? 'on' : 'off'}
-                  </span>
-                </span>
-              ))}
-            </div>
+        <div className="header-right">
+          {findings.length > 0 && (
+            <span className="findings-badge">{findings.length} finding{findings.length > 1 ? 's' : ''}</span>
           )}
+          <button className="icon-btn" onClick={() => setSettingsOpen(!settingsOpen)} title="Settings">
+            <SettingsIcon />
+          </button>
         </div>
       </header>
 
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'minmax(280px, 1fr) minmax(0, 2.2fr)',
-          flex: 1,
-          minHeight: 0,
-        }}
-      >
-        <aside
-          style={{
-            borderRight: '1px solid var(--border)',
-            padding: '0.75rem 1rem',
-            overflow: 'auto',
-            background: '#0f1218',
-          }}
-        >
-          <div style={{ fontSize: '0.72rem', color: 'var(--muted)', marginBottom: '0.35rem' }}>Access</div>
-          <input
-            value={apiKeyInput}
-            onChange={(e) => setApiKeyInput(e.target.value)}
-            placeholder="MUTATION_API_KEY (browser)"
-            style={inputStyle}
-          />
-          <button type="button" onClick={saveApiKey} style={{ ...btnStyle, marginTop: '0.45rem', width: '100%' }}>
-            Save API key locally
-          </button>
-
-          <div style={{ fontSize: '0.72rem', color: 'var(--muted)', margin: '1rem 0 0.35rem' }}>LLM (browser only)</div>
-          <p style={{ fontSize: '0.68rem', color: 'var(--muted)', margin: '0 0 0.4rem' }}>
-            Keys and models are stored in <code>localStorage</code> and sent with each chat request (not written to{' '}
-            <code>.env</code>). Use HTTPS in production. Switching provider or model keeps the same session transcript so
-            the next model sees prior user/assistant turns.
-          </p>
-          <select
-            value={llmProvider}
-            onChange={(e) => setLlmProvider(e.target.value as 'openai' | 'anthropic')}
-            style={{ ...inputStyle, marginBottom: '0.35rem' }}
-          >
-            <option value="openai">OpenAI-compatible</option>
-            <option value="anthropic">Anthropic Claude</option>
-          </select>
-          <input
-            type="password"
-            value={llmOpenaiKey}
-            onChange={(e) => setLlmOpenaiKey(e.target.value)}
-            placeholder="OpenAI API key (or ollama / LiteLLM key)"
-            style={{ ...inputStyle, marginBottom: '0.35rem' }}
-          />
-          <input
-            value={llmOpenaiBaseUrl}
-            onChange={(e) => setLlmOpenaiBaseUrl(e.target.value)}
-            placeholder="OpenAI base URL (empty = https://api.openai.com/v1)"
-            style={{ ...inputStyle, marginBottom: '0.35rem' }}
-          />
-          <input
-            value={llmOpenaiModel}
-            onChange={(e) => setLlmOpenaiModel(e.target.value)}
-            placeholder="OpenAI model id (e.g. gpt-4o-mini)"
-            style={{ ...inputStyle, marginBottom: '0.35rem' }}
-          />
-          <input
-            type="password"
-            value={llmAnthropicKey}
-            onChange={(e) => setLlmAnthropicKey(e.target.value)}
-            placeholder="Anthropic API key"
-            style={{ ...inputStyle, marginBottom: '0.35rem' }}
-          />
-          <input
-            value={llmAnthropicModel}
-            onChange={(e) => setLlmAnthropicModel(e.target.value)}
-            placeholder="Anthropic model (e.g. claude-opus-4-6)"
-            style={{ ...inputStyle, marginBottom: '0.35rem' }}
-          />
-          <input
-            value={llmEmbeddingModel}
-            onChange={(e) => setLlmEmbeddingModel(e.target.value)}
-            placeholder="Embedding model (OpenAI-compatible; optional)"
-            style={{ ...inputStyle, marginBottom: '0.35rem' }}
-          />
-          <button type="button" onClick={saveLlmToBrowser} style={{ ...btnStyle, width: '100%' }}>
-            Save LLM settings to browser
-          </button>
-
-          <div style={{ fontSize: '0.72rem', color: 'var(--muted)', margin: '1rem 0 0.35rem' }}>Scope</div>
-          <input
-            value={scopeUrl}
-            onChange={(e) => setScopeUrl(e.target.value)}
-            placeholder="https://your-lab-target.example"
-            style={inputStyle}
-          />
-          <button
-            type="button"
-            onClick={() => void applyScope()}
-            disabled={!sessionId}
-            style={{ ...btnStyle, marginTop: '0.45rem', width: '100%' }}
-          >
-            Apply scope to session
-          </button>
-
-          <div style={{ fontSize: '0.72rem', color: 'var(--muted)', margin: '1rem 0 0.35rem' }}>Sandbox (per session)</div>
-          <p style={{ fontSize: '0.68rem', color: 'var(--muted)', margin: '0 0 0.4rem' }}>
-            Server <code>SANDBOX_MODE</code>: {sbDefaults?.sandboxMode ?? '…'}. When mode is <code>docker</code>, the first
-            chat run pulls configured images automatically. Enable both Novatrix and Exegol so the model can choose{' '}
-            <code>sandbox_profile</code> per command.
-          </p>
-          <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.8rem', marginBottom: '0.25rem' }}>
-            <input
-              type="checkbox"
-              checked={sbNovatrixEnabled}
-              onChange={(e) => setSbNovatrixEnabled(e.target.checked)}
-              disabled={!sessionId}
-            />
-            Novatrix (Tier-1 tools)
-          </label>
-          <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.8rem', marginBottom: '0.45rem' }}>
-            <input
-              type="checkbox"
-              checked={sbExegolEnabled}
-              onChange={(e) => setSbExegolEnabled(e.target.checked)}
-              disabled={!sessionId}
-            />
-            Exegol (full image)
-          </label>
-          <input
-            value={sbNovatrixImage}
-            onChange={(e) => setSbNovatrixImage(e.target.value)}
-            placeholder={`Novatrix image (empty = server default${sbDefaults ? `: ${sbDefaults.defaultNovatrixImage}` : ''})`}
-            disabled={!sessionId}
-            style={{ ...inputStyle, marginBottom: '0.35rem' }}
-          />
-          <input
-            value={sbExegolImage}
-            onChange={(e) => setSbExegolImage(e.target.value)}
-            placeholder={`Exegol image (empty = ${sbDefaults?.defaultExegolImage ?? 'nwodtuhs/exegol:web'})`}
-            disabled={!sessionId}
-            style={{ ...inputStyle, marginBottom: '0.35rem' }}
-          />
-          <select
-            value={sbNetwork}
-            onChange={(e) => setSbNetwork(e.target.value)}
-            disabled={!sessionId}
-            style={{ ...inputStyle, marginBottom: '0.35rem' }}
-          >
-            <option value="">Docker network (server default{sbDefaults ? `: ${sbDefaults.defaultDockerNetwork}` : ''})</option>
-            <option value="none">none (no outbound)</option>
-            <option value="bridge">bridge (Internet)</option>
-          </select>
-          <button
-            type="button"
-            onClick={() => void saveSandboxSettings()}
-            disabled={!sessionId || sbSaving}
-            style={{ ...btnStyle, marginTop: '0.2rem', width: '100%' }}
-          >
-            {sbSaving ? 'Saving…' : 'Save sandbox settings'}
-          </button>
-          <button
-            type="button"
-            onClick={() => void pullSandboxImagesNow()}
-            disabled={!sessionId || sbPulling || sbDefaults?.sandboxMode !== 'docker'}
-            style={{ ...btnStyle, marginTop: '0.35rem', width: '100%' }}
-          >
-            {sbPulling ? 'Pulling…' : 'Pull images now (docker)'}
-          </button>
-
-          <div style={{ fontSize: '0.72rem', color: 'var(--muted)', margin: '1rem 0 0.35rem' }}>Scheduling</div>
-          <input
-            value={scheduleCron}
-            onChange={(e) => setScheduleCron(e.target.value)}
-            placeholder="cron"
-            style={inputStyle}
-          />
-          <textarea
-            value={schedulePrompt}
-            onChange={(e) => setSchedulePrompt(e.target.value)}
-            rows={3}
-            style={{ ...inputStyle, marginTop: '0.35rem', resize: 'vertical' }}
-          />
-          <button
-            type="button"
-            onClick={() => void createSchedule()}
-            disabled={!sessionId}
-            style={{ ...btnStyle, marginTop: '0.45rem', width: '100%' }}
-          >
-            Save schedule row
-          </button>
-          <p style={{ fontSize: '0.7rem', color: 'var(--muted)', marginTop: '0.5rem' }}>
-            BullMQ worker + Redis enqueue post-run reports; attach a cron runner to hit the chat API for full cadence
-            automation.
-          </p>
-        </aside>
-
-        <main style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: '1fr 1fr',
-              flex: 1,
-              minHeight: 0,
-              borderBottom: '1px solid var(--border)',
-            }}
-          >
-            <section style={{ display: 'flex', flexDirection: 'column', minHeight: 0, borderRight: '1px solid var(--border)' }}>
-              <PanelLabel>Objective &amp; chat</PanelLabel>
-              <div style={{ flex: 1, overflow: 'auto', padding: '0 0.85rem 0.85rem' }}>
-                {messages.map((m, i) => (
-                  <div
-                    key={i}
-                    style={{
-                      marginBottom: '0.85rem',
-                      whiteSpace: 'pre-wrap',
-                      color: m.role === 'user' ? 'var(--text)' : '#a8c4f0',
-                      fontSize: '0.9rem',
-                    }}
-                  >
-                    <strong>{m.role === 'user' ? 'You' : 'Assistant'}</strong>
-                    <div style={{ marginTop: '0.2rem' }}>{m.content}</div>
-                  </div>
-                ))}
-                {streaming && (
-                  <div style={{ color: '#a8c4f0', whiteSpace: 'pre-wrap', fontSize: '0.9rem' }}>
-                    <strong>Assistant</strong>
-                    <div style={{ marginTop: '0.2rem' }}>{streaming}</div>
-                  </div>
-                )}
-              </div>
-              <div style={{ padding: '0.65rem 0.85rem', borderTop: '1px solid var(--border)', display: 'flex', gap: '0.45rem' }}>
-                <input
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && void send()}
-                  placeholder={
-                    sessionId
-                      ? 'Describe the authorized goal (recon, nuclei, httpx, browser capture, API checks)…'
-                      : 'Starting session…'
-                  }
-                  disabled={!sessionId || busy}
-                  style={{ ...inputStyle, flex: 1 }}
-                />
-                <button type="button" onClick={() => void send()} disabled={!sessionId || busy} style={btnPrimary}>
-                  Run
-                </button>
-              </div>
-            </section>
-
-            <section style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-              <PanelLabel>Terminal (live stream)</PanelLabel>
-              <pre style={preStyle}>{terminalLog || 'Waiting for terminal_exec…'}</pre>
-            </section>
-          </div>
-
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
-              minHeight: 200,
-              flex: '0 0 38vh',
-            }}
-          >
-            <section style={{ display: 'flex', flexDirection: 'column', minHeight: 0, borderRight: '1px solid var(--border)' }}>
-              <PanelLabel>Browser</PanelLabel>
-              {screenshotUrl && (
-                <div style={{ padding: '0 0.5rem' }}>
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={screenshotUrl}
-                    alt="Latest screenshot"
-                    style={{ maxWidth: '100%', borderRadius: 6, border: '1px solid var(--border)' }}
-                    onError={(e) => {
-                      (e.target as HTMLImageElement).style.display = 'none';
-                    }}
-                  />
-                </div>
-              )}
-              <pre style={{ ...preStyle, flex: 1 }}>{browserLog || 'browser_navigate output / capture logs…'}</pre>
-            </section>
-            <section style={{ display: 'flex', flexDirection: 'column', minHeight: 0, borderRight: '1px solid var(--border)' }}>
-              <PanelLabel>HTTP / API</PanelLabel>
-              <pre style={preStyle}>{apiLog || 'http_request traces appear here.'}</pre>
-            </section>
-            <section style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-              <PanelLabel>Network log</PanelLabel>
-              <pre style={preStyle}>{networkLog || 'High-level request lines from http_request.'}</pre>
-            </section>
-          </div>
-
-          <section style={{ borderTop: '1px solid var(--border)', flex: '0 0 22vh', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-            <PanelLabel>Evidence &amp; findings</PanelLabel>
-            <div style={{ flex: 1, overflow: 'auto', padding: '0 0.85rem 0.85rem', fontSize: '0.82rem' }}>
-              {findings.length === 0 && <span style={{ color: 'var(--muted)' }}>No findings yet for this session.</span>}
-              {findings.map((f) => (
-                <div
-                  key={f.id}
-                  style={{
-                    border: '1px solid var(--border)',
-                    borderRadius: 8,
-                    padding: '0.55rem 0.65rem',
-                    marginBottom: '0.45rem',
-                    background: '#11151d',
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.5rem' }}>
-                    <strong>{f.title}</strong>
-                    <span style={{ color: sevColor(f.severity), fontSize: '0.72rem' }}>{f.severity}</span>
-                  </div>
-                  <div style={{ color: 'var(--muted)', marginTop: '0.25rem', whiteSpace: 'pre-wrap' }}>{f.description}</div>
-                  {f.evidence && (
-                    <div style={{ marginTop: '0.35rem', color: '#cbd5e1', whiteSpace: 'pre-wrap' }}>
-                      <em>Evidence:</em> {f.evidence}
-                    </div>
-                  )}
-                </div>
-              ))}
+      <div className="main-area">
+        {/* Settings drawer */}
+        {settingsOpen && (
+          <aside className="settings-drawer">
+            <div className="drawer-section">
+              <label className="drawer-label">Provider</label>
+              <select value={llmProvider} onChange={(e) => setLlmProvider(e.target.value as 'openai' | 'anthropic')} className="input">
+                <option value="openai">OpenAI-compatible</option>
+                <option value="anthropic">Anthropic Claude</option>
+              </select>
             </div>
-          </section>
+            {llmProvider === 'openai' ? (
+              <>
+                <div className="drawer-section">
+                  <label className="drawer-label">API Key</label>
+                  <input type="password" value={llmOpenaiKey} onChange={(e) => setLlmOpenaiKey(e.target.value)} placeholder="sk-..." className="input" />
+                </div>
+                <div className="drawer-section">
+                  <label className="drawer-label">Base URL</label>
+                  <input value={llmOpenaiBaseUrl} onChange={(e) => setLlmOpenaiBaseUrl(e.target.value)} placeholder="https://api.openai.com/v1" className="input" />
+                </div>
+                <div className="drawer-section">
+                  <label className="drawer-label">Model</label>
+                  <input value={llmOpenaiModel} onChange={(e) => setLlmOpenaiModel(e.target.value)} placeholder="gpt-4o-mini" className="input" />
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="drawer-section">
+                  <label className="drawer-label">API Key</label>
+                  <input type="password" value={llmAnthropicKey} onChange={(e) => setLlmAnthropicKey(e.target.value)} placeholder="sk-ant-..." className="input" />
+                </div>
+                <div className="drawer-section">
+                  <label className="drawer-label">Model</label>
+                  <input value={llmAnthropicModel} onChange={(e) => setLlmAnthropicModel(e.target.value)} placeholder="claude-sonnet-4-5" className="input" />
+                </div>
+              </>
+            )}
+            <div className="drawer-section">
+              <label className="drawer-label">Mutation API Key (optional)</label>
+              <input value={apiKeyInput} onChange={(e) => setApiKeyInput(e.target.value)} placeholder="Server MUTATION_API_KEY" className="input" />
+            </div>
+            <div className="drawer-section">
+              <label className="drawer-label">Target Scope</label>
+              <input value={scopeUrl} onChange={(e) => setScopeUrl(e.target.value)} placeholder="https://target.example.com" className="input" />
+              <button className="btn btn-sm" onClick={() => void applyScope()} disabled={!sessionId || !scopeUrl.trim()} style={{ marginTop: 6 }}>
+                Apply Scope
+              </button>
+            </div>
+            <div className="drawer-actions">
+              <button className="btn btn-primary" onClick={saveSettings}>Save &amp; Close</button>
+              <button className="btn" onClick={() => setSettingsOpen(false)}>Cancel</button>
+            </div>
+          </aside>
+        )}
+
+        {/* Chat area */}
+        <main className="chat-main">
+          <div className="chat-messages">
+            {blocks.length === 0 && !busy && (
+              <div className="empty-state">
+                <h2>Ready for authorized assessment</h2>
+                <p>Describe your target and objective. The agent will execute recon, scans, and analysis in a sandboxed environment.</p>
+                <p className="hint">Configure your LLM key and target scope in <button className="link-btn" onClick={() => setSettingsOpen(true)}>Settings</button></p>
+              </div>
+            )}
+
+            {blocks.map((block, i) => {
+              if (block.kind === 'user') return <UserMsg key={i} text={block.text} />;
+              if (block.kind === 'assistant') return <AssistantMsg key={i} text={block.text} />;
+              if (block.kind === 'tool') return <ToolBlock key={block.tool.id} tool={block.tool} />;
+              if (block.kind === 'finding') return <FindingBlock key={i} finding={block.data} />;
+              if (block.kind === 'error') return <ErrorBlock key={i} text={block.text} />;
+              return null;
+            })}
+
+            {streaming && <AssistantMsg text={streaming} live />}
+
+            <div ref={chatEndRef} />
+          </div>
+
+          {/* Input bar */}
+          <div className="input-bar">
+            <input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && void send()}
+              placeholder={sessionId ? 'Describe your assessment goal...' : 'Initializing session...'}
+              disabled={!sessionId || busy}
+              className="chat-input"
+            />
+            {busy ? (
+              <button className="btn btn-danger" onClick={stop}>Stop</button>
+            ) : (
+              <button className="btn btn-primary" onClick={() => void send()} disabled={!sessionId || !input.trim()}>
+                Send
+              </button>
+            )}
+          </div>
         </main>
+
+        {/* Findings sidebar (only when findings exist) */}
+        {findings.length > 0 && (
+          <aside className="findings-panel">
+            <h3 className="findings-title">Findings ({findings.length})</h3>
+            {findings.map((f) => (
+              <div key={f.id} className="finding-card">
+                <div className="finding-header">
+                  <span className="finding-name">{f.title}</span>
+                  <span className={`sev sev-${f.severity}`}>{f.severity}</span>
+                </div>
+                <p className="finding-desc">{f.description}</p>
+                {f.evidence && <pre className="finding-evidence">{f.evidence}</pre>}
+              </div>
+            ))}
+          </aside>
+        )}
       </div>
 
       {error && (
-        <div
-          style={{
-            padding: '0.65rem 1rem',
-            background: '#3d1f1f',
-            color: '#fecaca',
-            fontSize: '0.88rem',
-          }}
-        >
-          {error}
+        <div className="global-error">
+          <span>{error}</span>
+          <button className="error-dismiss" onClick={() => setError(null)}>×</button>
         </div>
+      )}
+
+      <style>{styles}</style>
+    </div>
+  );
+}
+
+/* ─── Chat components ─── */
+function UserMsg({ text }: { text: string }) {
+  return (
+    <div className="msg msg-user">
+      <div className="msg-avatar user-avatar">U</div>
+      <div className="msg-body">
+        <pre className="msg-text">{text}</pre>
+      </div>
+    </div>
+  );
+}
+
+function AssistantMsg({ text, live }: { text: string; live?: boolean }) {
+  return (
+    <div className="msg msg-assistant">
+      <div className="msg-avatar assistant-avatar">N</div>
+      <div className="msg-body">
+        <pre className="msg-text">{text}</pre>
+        {live && <span className="typing-indicator" />}
+      </div>
+    </div>
+  );
+}
+
+function ToolBlock({ tool }: { tool: ToolEvent }) {
+  const [expanded, setExpanded] = useState(true);
+  const isRunning = !tool.result && !!tool.streaming;
+  const output = tool.result ?? tool.streaming ?? '';
+  const lines = output.split('\n');
+  const preview = lines.slice(0, 8).join('\n');
+  const hasMore = lines.length > 8;
+
+  return (
+    <div className="tool-block">
+      <button className="tool-header" onClick={() => setExpanded(!expanded)}>
+        <span className={`tool-icon ${isRunning ? 'spinning' : ''}`}>{isRunning ? '⟳' : '⚡'}</span>
+        <span className="tool-name">{tool.name}</span>
+        {isRunning && <span className="tool-status">running...</span>}
+        <span className="tool-chevron">{expanded ? '▾' : '▸'}</span>
+      </button>
+      {expanded && (
+        <pre className="tool-output">{hasMore && !expanded ? preview + '\n...' : output || '(waiting...)'}</pre>
       )}
     </div>
   );
 }
 
-function PanelLabel({ children }: { children: ReactNode }) {
+function FindingBlock({ finding }: { finding: Finding }) {
   return (
-    <div style={{ padding: '0.45rem 0.75rem', fontSize: '0.72rem', color: 'var(--muted)', letterSpacing: '0.02em' }}>
-      {children}
+    <div className="finding-inline">
+      <div className="finding-inline-header">
+        <span className="finding-inline-icon">🎯</span>
+        <strong>{finding.title}</strong>
+        <span className={`sev sev-${finding.severity}`}>{finding.severity}</span>
+      </div>
+      <p className="finding-inline-desc">{finding.description}</p>
     </div>
   );
 }
 
-function sevColor(s: string): string {
-  switch (s) {
-    case 'critical':
-      return '#f87171';
-    case 'high':
-      return '#fb923c';
-    case 'medium':
-      return '#fbbf24';
-    case 'low':
-      return '#86efac';
-    default:
-      return '#94a3b8';
-  }
+function ErrorBlock({ text }: { text: string }) {
+  return (
+    <div className="msg msg-error">
+      <div className="msg-avatar error-avatar">!</div>
+      <div className="msg-body"><pre className="msg-text error-text">{text}</pre></div>
+    </div>
+  );
 }
 
-const inputStyle: CSSProperties = {
-  width: '100%',
-  padding: '0.45rem 0.55rem',
-  borderRadius: 6,
-  border: '1px solid var(--border)',
-  background: '#0d1117',
-  color: 'var(--text)',
-  fontSize: '0.85rem',
-};
+function SettingsIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </svg>
+  );
+}
 
-const btnStyle: CSSProperties = {
-  padding: '0.45rem 0.65rem',
-  borderRadius: 6,
-  border: '1px solid var(--border)',
-  background: '#1b2230',
-  color: 'var(--text)',
-  cursor: 'pointer',
-  fontSize: '0.82rem',
-};
+/* ─── Styles ─── */
+const styles = `
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  flex-shrink: 0;
+}
+.header-left { display: flex; align-items: baseline; gap: 12px; }
+.logo { margin: 0; font-size: 1.1rem; font-weight: 700; color: var(--text); }
+.tagline { font-size: 0.8rem; color: var(--muted); }
+.header-right { display: flex; align-items: center; gap: 12px; }
+.findings-badge {
+  font-size: 0.75rem;
+  background: #1f3a1f;
+  color: var(--success);
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-weight: 500;
+}
+.icon-btn {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 6px;
+  display: flex;
+}
+.icon-btn:hover { color: var(--text); background: #21262d; }
 
-const btnPrimary: CSSProperties = {
-  ...btnStyle,
-  background: 'var(--accent)',
-  borderColor: 'transparent',
-  color: '#fff',
-  fontWeight: 600,
-};
+.main-area {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
 
-const preStyle: CSSProperties = {
-  flex: 1,
-  margin: 0,
-  padding: '0 0.75rem 0.75rem',
-  overflow: 'auto',
-  fontSize: '0.78rem',
-  background: 'var(--terminal)',
-  color: '#c9d1d9',
-};
+/* Settings drawer */
+.settings-drawer {
+  width: 320px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  background: var(--panel);
+  padding: 16px;
+  overflow-y: auto;
+}
+.drawer-section { margin-bottom: 14px; }
+.drawer-label { display: block; font-size: 0.75rem; color: var(--muted); margin-bottom: 4px; font-weight: 500; }
+.drawer-actions { display: flex; gap: 8px; margin-top: 16px; }
+
+/* Chat main */
+.chat-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 0;
+}
+.empty-state {
+  text-align: center;
+  margin-top: 20vh;
+  color: var(--muted);
+}
+.empty-state h2 { color: var(--text); font-size: 1.3rem; margin-bottom: 8px; font-weight: 600; }
+.empty-state p { max-width: 500px; margin: 0 auto 8px; font-size: 0.9rem; }
+.hint { font-size: 0.82rem; }
+.link-btn { background: none; border: none; color: var(--accent); cursor: pointer; font-size: inherit; text-decoration: underline; }
+
+/* Messages */
+.msg {
+  display: flex;
+  gap: 12px;
+  padding: 16px 24px;
+  max-width: 860px;
+  margin: 0 auto;
+  width: 100%;
+}
+.msg-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.user-avatar { background: #1f6feb; color: #fff; }
+.assistant-avatar { background: #238636; color: #fff; }
+.error-avatar { background: #da3633; color: #fff; }
+.msg-body { flex: 1; min-width: 0; }
+.msg-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  font-family: inherit;
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+.error-text { color: #f85149; }
+.typing-indicator {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  background: var(--accent);
+  border-radius: 50%;
+  margin-left: 4px;
+  animation: pulse 1s infinite;
+}
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+/* Tool blocks */
+.tool-block {
+  max-width: 860px;
+  margin: 4px auto;
+  width: 100%;
+  padding: 0 24px 0 68px;
+}
+.tool-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #161b22;
+  border: 1px solid var(--border);
+  border-radius: 8px 8px 0 0;
+  padding: 8px 12px;
+  cursor: pointer;
+  width: 100%;
+  color: var(--text);
+  font-size: 0.82rem;
+  font-weight: 500;
+  text-align: left;
+}
+.tool-header:hover { background: #1c2128; }
+.tool-icon { font-size: 1rem; }
+.spinning { animation: spin 1s linear infinite; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.tool-name { font-family: ui-monospace, monospace; color: var(--accent); }
+.tool-status { color: var(--muted); font-size: 0.75rem; margin-left: auto; }
+.tool-chevron { color: var(--muted); margin-left: auto; }
+.tool-output {
+  margin: 0;
+  padding: 10px 14px;
+  background: #0d1117;
+  border: 1px solid var(--border);
+  border-top: none;
+  border-radius: 0 0 8px 8px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: #c9d1d9;
+  overflow-x: auto;
+  max-height: 400px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* Findings inline */
+.finding-inline {
+  max-width: 860px;
+  margin: 8px auto;
+  width: 100%;
+  padding: 0 24px 0 68px;
+}
+.finding-inline-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #1a2332;
+  border: 1px solid #1f6feb44;
+  border-radius: 8px 8px 0 0;
+  padding: 10px 14px;
+  font-size: 0.85rem;
+}
+.finding-inline-icon { font-size: 1rem; }
+.finding-inline-desc {
+  margin: 0;
+  padding: 10px 14px;
+  background: #0d1520;
+  border: 1px solid #1f6feb44;
+  border-top: none;
+  border-radius: 0 0 8px 8px;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+/* Findings sidebar */
+.findings-panel {
+  width: 300px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border);
+  background: var(--panel);
+  padding: 16px;
+  overflow-y: auto;
+}
+.findings-title { font-size: 0.85rem; margin: 0 0 12px; font-weight: 600; }
+.finding-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  background: #0d1117;
+}
+.finding-header { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.finding-name { font-size: 0.82rem; font-weight: 500; }
+.finding-desc { font-size: 0.78rem; color: var(--muted); margin: 6px 0 0; }
+.finding-evidence { font-size: 0.72rem; color: #8b949e; margin: 6px 0 0; white-space: pre-wrap; }
+
+.sev { font-size: 0.7rem; padding: 2px 8px; border-radius: 10px; font-weight: 500; }
+.sev-critical { background: #4d1f1f; color: #f85149; }
+.sev-high { background: #3d2a0f; color: #fb923c; }
+.sev-medium { background: #3d340f; color: #d29922; }
+.sev-low { background: #1a3d1a; color: #3fb950; }
+.sev-info { background: #1c2128; color: #8b949e; }
+
+/* Input bar */
+.input-bar {
+  display: flex;
+  gap: 10px;
+  padding: 14px 24px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  max-width: 908px;
+  margin: 0 auto;
+  width: 100%;
+}
+.chat-input {
+  flex: 1;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.9rem;
+  outline: none;
+  transition: border-color 0.2s;
+}
+.chat-input:focus { border-color: var(--accent); }
+.chat-input:disabled { opacity: 0.5; }
+
+/* Buttons */
+.btn {
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #21262d;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 500;
+  transition: background 0.15s;
+}
+.btn:hover { background: #30363d; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-sm { padding: 5px 12px; font-size: 0.78rem; }
+.btn-primary { background: #238636; border-color: #2ea043; color: #fff; }
+.btn-primary:hover { background: #2ea043; }
+.btn-danger { background: #da3633; border-color: #f85149; color: #fff; }
+.btn-danger:hover { background: #b62324; }
+
+.input {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.82rem;
+  outline: none;
+}
+.input:focus { border-color: var(--accent); }
+
+/* Global error bar */
+.global-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 20px;
+  background: #3d1f1f;
+  color: #fecaca;
+  font-size: 0.85rem;
+  flex-shrink: 0;
+}
+.error-dismiss {
+  background: none;
+  border: none;
+  color: #fecaca;
+  font-size: 1.2rem;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+@media (max-width: 768px) {
+  .settings-drawer { width: 100%; position: absolute; z-index: 10; height: calc(100vh - 50px); }
+  .findings-panel { display: none; }
+  .msg { padding: 12px 16px; }
+  .tool-block, .finding-inline { padding-left: 52px; padding-right: 16px; }
+  .input-bar { padding: 10px 16px; }
+}
+`;
