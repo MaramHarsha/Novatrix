@@ -315,6 +315,7 @@ export default function HomePage() {
     const userMsg = input.trim();
     setInput('');
     setError(null);
+    const restoreInput = () => setInput(userMsg);
     setBlocks((b) => [...b, { kind: 'user', text: userMsg }]);
     setStreaming('');
     setBusy(true);
@@ -347,33 +348,22 @@ export default function HomePage() {
       });
 
       if (!res.ok) {
+        restoreInput();
         const j = await res.json().catch(() => ({}));
         throw new Error((j as { error?: string }).error ?? res.statusText);
       }
 
       const reader = res.body?.getReader();
-      if (!reader) throw new Error('No response body');
+      if (!reader) {
+        restoreInput();
+        throw new Error('No response body');
+      }
 
       const dec = new TextDecoder();
       let buffer = '';
       let assistant = '';
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += dec.decode(value, { stream: true });
-        const parts = buffer.split('\n\n');
-        buffer = parts.pop() ?? '';
-        for (const raw of parts) {
-          const line = raw.trim();
-          if (!line.startsWith('data: ')) continue;
-          let data: Record<string, unknown>;
-          try {
-            data = JSON.parse(line.slice(6)) as Record<string, unknown>;
-          } catch {
-            continue;
-          }
-
+      const handleSsePayload = (data: Record<string, unknown>) => {
           const type = data.type as string | undefined;
 
           if (type === 'sandbox_pull' && data.status === 'started' && Array.isArray(data.images)) {
@@ -447,6 +437,37 @@ export default function HomePage() {
           if (type === 'done' && data.runId) {
             void refreshFindings(sessionId);
           }
+      };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += dec.decode(value, { stream: true });
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop() ?? '';
+        for (const raw of parts) {
+          const line = raw.trim();
+          if (!line.startsWith('data: ')) continue;
+          let data: Record<string, unknown>;
+          try {
+            data = JSON.parse(line.slice(6)) as Record<string, unknown>;
+          } catch {
+            continue;
+          }
+          handleSsePayload(data);
+        }
+      }
+
+      if (buffer.trim()) {
+        for (const raw of buffer.split('\n\n')) {
+          const line = raw.trim();
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const data = JSON.parse(line.slice(6)) as Record<string, unknown>;
+            handleSsePayload(data);
+          } catch {
+            /* trailing chunk may be partial */
+          }
         }
       }
 
@@ -460,6 +481,7 @@ export default function HomePage() {
       if ((e as Error).name === 'AbortError') {
         setBlocks((b) => [...b, { kind: 'error', text: 'Stopped by user.' }]);
       } else {
+        restoreInput();
         const msg = e instanceof Error ? e.message : String(e);
         setError(msg);
         setBlocks((b) => [...b, { kind: 'error', text: msg }]);
@@ -937,15 +959,16 @@ export default function HomePage() {
             <div ref={chatEndRef} />
           </div>
 
-          <div className="input-bar">
+          <form
+            className="input-bar"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void send();
+            }}
+          >
             <input
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key !== 'Enter' || e.shiftKey) return;
-                e.preventDefault();
-                void send();
-              }}
               placeholder={
                 sessionsLoading
                   ? 'Loading session…'
@@ -953,8 +976,11 @@ export default function HomePage() {
                     ? 'Objective, command intent, or question…'
                     : 'Set Mutation API key in Settings if required, then refresh — or wait…'
               }
-              disabled={!sessionId || busy || sessionsLoading}
+              disabled={busy}
               className="chat-input"
+              name="message"
+              autoComplete="off"
+              aria-label="Chat message"
             />
             {busy ? (
               <button type="button" className="btn btn-danger" onClick={stop}>
@@ -962,15 +988,14 @@ export default function HomePage() {
               </button>
             ) : (
               <button
-                type="button"
+                type="submit"
                 className="btn btn-primary"
-                onClick={() => void send()}
-                disabled={!sessionId || !input.trim() || busy || sessionsLoading}
+                disabled={!sessionId || !input.trim() || sessionsLoading}
               >
                 Send
               </button>
             )}
-          </div>
+          </form>
         </main>
 
         {/* Right: IDE-style live console (terminal-heavy UX) */}
