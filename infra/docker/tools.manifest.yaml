@@ -1,37 +1,88 @@
-# Tool inventory for agent / operators (extend over time)
-tier: T1
+# Bundled in novatrix-sandbox image (see sandbox.Dockerfile). Exegol adds 400+ more via separate image.
+tier: T1_plus
 tools:
   - name: nuclei
     binary: nuclei
-    license: MIT
     source: https://github.com/projectdiscovery/nuclei
   - name: httpx
     binary: httpx
-    license: MIT
     source: https://github.com/projectdiscovery/httpx
   - name: subfinder
     binary: subfinder
-    license: MIT
     source: https://github.com/projectdiscovery/subfinder
   - name: katana
     binary: katana
-    license: MIT
     source: https://github.com/projectdiscovery/katana
   - name: dnsx
     binary: dnsx
-    license: MIT
     source: https://github.com/projectdiscovery/dnsx
+  - name: naabu
+    binary: naabu
+    note: needs libpcap; some modes may need elevated caps
+  - name: uncover
+    binary: uncover
+    source: https://github.com/projectdiscovery/uncover
+  - name: tlsx
+    binary: tlsx
+    source: https://github.com/projectdiscovery/tlsx
+  - name: chaos
+    binary: chaos
+    note: ProjectDiscovery Chaos API client; optional PDCP_API_KEY
   - name: ffuf
     binary: ffuf
-    license: MIT
     source: https://github.com/ffuf/ffuf
+  - name: gobuster
+    binary: gobuster
+    source: https://github.com/OJ/gobuster
+  - name: feroxbuster
+    binary: feroxbuster
+    source: https://github.com/epi052/feroxbuster
+  - name: amass
+    binary: amass
+    source: https://github.com/owasp-amass/amass
+  - name: gau
+    binary: gau
+    source: https://github.com/lc/gau
+  - name: waybackurls
+    binary: waybackurls
+  - name: assetfinder
+    binary: assetfinder
+  - name: httprobe
+    binary: httprobe
+  - name: anew
+    binary: anew
+  - name: rustscan
+    binary: rustscan
+    note: amd64 Linux only in image; use nmap/naabu on arm64
+  - name: nmap
+    binary: nmap
+  - name: masscan
+    binary: masscan
+  - name: dirb
+    binary: dirb
+  - name: nikto
+    binary: nikto
+  - name: hydra
+    binary: hydra
+  - name: wfuzz
+    binary: wfuzz
+  - name: sslscan
+    binary: sslscan
+  - name: whatweb
+    binary: whatweb
   - name: sqlmap
     binary: sqlmap
-    license: GPL-2.0
-    source: https://github.com/sqlmapproject/sqlmap
-wordlists:
-  - name: SecLists
-    note: Mount read-only at /wordlists/seclists when needed
+  - name: commix
+    binary: commix
+  - name: arjun
+    binary: arjun
+  - name: dirsearch
+    binary: dirsearch
+  - name: whois
+    binary: whois
+  - name: smbclient
+    binary: smbclient
 
-# Optional full offensive image (community); see docs/EXEGOL.md in repo
-exegol_agent_hint: Optional Exegol Docker image nwodtuhs/exegol (tags free, full, web, ad, light, osint, nightly) provides 400+ tools upstream; set SANDBOX_IMAGE and SANDBOX_MODE=docker. https://exegol.readthedocs.io/
+exegol_note: |
+  For the full offensive distribution (Metasploit-class breadth), use Docker image nwodtuhs/exegol
+  (tags web, full, light, …). Enable the Exegol profile in the UI; see docs/EXEGOL.md and scripts/docker/pull-exegol.sh

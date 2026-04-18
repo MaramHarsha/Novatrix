@@ -6,7 +6,7 @@ export const tools: ChatCompletionTool[] = [
     function: {
       name: 'terminal_exec',
       description:
-        'Run a shell command inside the isolated sandbox workspace. Use sandbox_profile "novatrix" for the default Tier-1 toolchain (nuclei, httpx, ffuf, …) or "exegol" when the session enables the full Exegol image. Cross-check with both when both are enabled.',
+        'Run a shell command in Docker when SANDBOX_MODE=docker. Required: `sandbox_profile` — use "novatrix" (ProjectDiscovery stack + common CLI in novatrix-sandbox image) or "exegol" (full Exegol image). Sessions default to both enabled: prefer novatrix for speed; use exegol when a tool is missing in novatrix. In mock mode only a bare host shell exists.',
       parameters: {
         type: 'object',
         properties: {
@@ -86,17 +86,21 @@ export const tools: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'record_finding',
-      description: 'Record a validated or suspected security finding with evidence.',
+      description:
+        'Record a security finding. For low/critical severities, evidence must contain verbatim proof (tool output, HTTP excerpt, etc.). Use severity info when no proof exists yet.',
       parameters: {
         type: 'object',
         properties: {
           title: { type: 'string' },
           severity: { type: 'string', enum: ['info', 'low', 'medium', 'high', 'critical'] },
           description: { type: 'string' },
-          evidence: { type: 'string' },
+          evidence: {
+            type: 'string',
+            description: 'Required for low–critical: command output lines, HTTP status/body snippet, or other verifiable proof from this run',
+          },
           payload: { type: 'string' },
         },
-        required: ['title', 'severity', 'description'],
+        required: ['title', 'severity', 'description', 'evidence'],
       },
     },
   },

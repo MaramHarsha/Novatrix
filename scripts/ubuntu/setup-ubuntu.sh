@@ -25,6 +25,8 @@
 #   SKIP_DB_PUSH=1         Skip database schema push (run `npm run db:push` later).
 #   SKIP_BUILD=1           Skip `npm run build` (e.g. only DB + deps).
 #   SKIP_DOCKER_COMPOSE=1  Skip `docker compose up -d` even if Docker exists.
+#   PULL_EXEGOL=1          After Docker works: `docker pull nwodtuhs/exegol:${EXEGOL_TAG:-web}` (large).
+#   BUILD_NOVATRIX_SANDBOX=1  Build `novatrix-sandbox:latest` from infra/docker/sandbox.Dockerfile (slow).
 #
 # LLM API keys can stay empty in .env if you use the web UI (localStorage).
 # =============================================================================
@@ -215,6 +217,17 @@ if [[ "${NOVATRIX_FULL_SETUP:-}" == "1" ]]; then
   fi
 
   log "Full setup finished from: $REPO_ROOT"
+fi
+
+if [[ "${PULL_EXEGOL:-}" == "1" ]] && command -v docker >/dev/null 2>&1 && is_novatrix_repo; then
+  ETAG="${EXEGOL_TAG:-web}"
+  log "PULL_EXEGOL=1: docker pull nwodtuhs/exegol:${ETAG} (may take a long time)"
+  docker pull "nwodtuhs/exegol:${ETAG}" || log "WARNING: Exegol pull failed — run: bash scripts/docker/pull-exegol.sh later"
+fi
+
+if [[ "${BUILD_NOVATRIX_SANDBOX:-}" == "1" ]] && command -v docker >/dev/null 2>&1 && is_novatrix_repo; then
+  log "BUILD_NOVATRIX_SANDBOX=1: docker build novatrix-sandbox:latest"
+  docker build -f infra/docker/sandbox.Dockerfile -t novatrix-sandbox:latest . || log "WARNING: sandbox image build failed"
 fi
 
 log "Done."

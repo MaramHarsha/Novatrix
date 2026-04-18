@@ -54,8 +54,8 @@ model Session {
   sandboxExegolImage     String?
   /// When SANDBOX_MODE=docker, run terminal/browser in this Novatrix-based image.
   sandboxEnableNovatrix  Boolean   @default(true)
-  /// When SANDBOX_MODE=docker, also expose Exegol as a second terminal profile.
-  sandboxEnableExegol    Boolean   @default(false)
+  /// When SANDBOX_MODE=docker, also expose Exegol as a second terminal profile (default on: dual profile).
+  sandboxEnableExegol    Boolean   @default(true)
   /// Override docker network for this session: none | bridge (null = server SANDBOX_DOCKER_NETWORK).
   sandboxDockerNetwork   String?
   /// Last successful `docker pull` signature for this session (image list + network).

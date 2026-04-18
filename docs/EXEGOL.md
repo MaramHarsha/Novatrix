@@ -1,47 +1,73 @@
-# Exegol as Novatrix sandbox image
+# Exegol + Novatrix sandbox
 
-[Exegol](https://exegol.readthedocs.io/) is a community offensive-security environment distributed as Docker images with a very large pre-installed toolset (hundreds of tools, depending on image variant). Novatrix does **not** vendor that image; you pull it from Docker Hub and point `SANDBOX_IMAGE` at it.
+[Exegol](https://exegol.readthedocs.io/) ships **hundreds** of offensive tools in Docker images. Novatrix does **not** copy that stack into `novatrix-sandbox`; you use a **second profile** that runs commands in `nwodtuhs/exegol:*`.
 
-## Web UI (no `.env` edit required)
+The **Novatrix** image (`infra/docker/sandbox.Dockerfile`) bundles a **large but finite** Go/apt/pip toolchain. Anything missing there is either added to the Dockerfile or run via **Exegol**.
 
-With `SANDBOX_MODE=docker` on the server, open the **Sandbox (per session)** panel in the Novatrix sidebar: enable **Exegol**, optionally override the image tag, choose **bridge** if the container needs outbound access, then **Save sandbox settings**. The next chat run pulls the image automatically (or use **Pull images now**). Enable **both** Novatrix and Exegol so the model can call `terminal_exec` with `sandbox_profile` `"novatrix"` or `"exegol"` per command.
+## Why tools look “missing”
 
-## Quick setup
+| Symptom | Cause | Fix |
+|--------|--------|-----|
+| Agent says “tool not found” / only basic shell | **`SANDBOX_MODE=mock`** (default in `.env`) | Set **`SANDBOX_MODE=docker`**, rebuild or pull **`novatrix-sandbox:latest`**, restart the app |
+| Old or empty `novatrix-sandbox` image | Never rebuilt after `git pull` | Run **`bash scripts/docker/build-novatrix-sandbox.sh`** (or `docker build -f infra/docker/sandbox.Dockerfile -t novatrix-sandbox:latest .`) |
+| Scans cannot resolve DNS or reach targets | **`SANDBOX_DOCKER_NETWORK=none`** | Set **`bridge`** (globally in `.env` and/or per session in the UI) |
+| Tool exists in Exegol but not Novatrix | Expected | Enable **Exegol profile**, **Save sandbox**, **Pull images**, use `sandbox_profile: "exegol"` in `terminal_exec` |
+| Exegol pull fails / out of disk | Full image is **tens of GB** | Use a smaller tag (`light`, `web`) or free space; see [Docker Hub tags](https://hub.docker.com/r/nwodtuhs/exegol/tags) |
 
-1. Pull an image (pick a tag that matches your needs; see [Exegol docs](https://exegol.readthedocs.io/en/latest/getting-started/installation/)):
+## Quick: Docker + Novatrix image
 
-   ```bash
-   docker pull nwodtuhs/exegol:web
-   ```
+From the **repository root**:
 
-   Common tags include `free`, `full`, `web`, `ad`, `light`, `osint`, and `nightly`.
+```bash
+# 1) Build the fat Novatrix sandbox (many CLIs)
+bash scripts/docker/build-novatrix-sandbox.sh
 
-2. In `.env` (or your deployment env):
+# 2) Point the app at Docker
+# In .env:
+SANDBOX_MODE=docker
+SANDBOX_IMAGE=novatrix-sandbox:latest
+SANDBOX_DOCKER_NETWORK=bridge
+```
 
-   ```env
-   SANDBOX_MODE=docker
-   SANDBOX_IMAGE=nwodtuhs/exegol:web
-   SANDBOX_DOCKER_NETWORK=bridge
-   ```
+Restart `npm run dev` / PM2 / Docker so env is picked up.
 
-   Use `SANDBOX_DOCKER_NETWORK=bridge` when the agent must reach your lab targets or the Internet from inside the container. Keep `none` only if you intentionally block outbound traffic.
+## Quick: Exegol image (optional)
 
-3. **Entrypoint**: Exegol images ship with their own `ENTRYPOINT`. Novatrix detects `exegol` in the image name and runs commands with `docker run --entrypoint /bin/bash … -lc "<command>"` so `terminal_exec` behaves like the default `novatrix-sandbox` image. To disable that (use the image default entrypoint and append `/bin/bash -lc` instead), set:
+```bash
+# Example: web-focused image (still large — plan disk/time)
+bash scripts/docker/pull-exegol.sh
+# or:  EXEGOL_TAG=light bash scripts/docker/pull-exegol.sh
+```
 
-   ```env
-   SANDBOX_DOCKER_ENTRYPOINT=none
-   ```
+Then in the **web UI** (left rail):
 
-   To force bash entrypoint for any other image:
+1. Enable **Exegol profile**.
+2. Override image if needed (default `nwodtuhs/exegol:web`).
+3. Set **network** to **bridge** if the container must reach the Internet or your lab.
+4. **Save sandbox** → **Pull images**.
 
-   ```env
-   SANDBOX_DOCKER_ENTRYPOINT=bash
-   ```
+On the next chat message, Novatrix pulls when the session signature changes. The agent should choose `sandbox_profile` **`novatrix`** vs **`exegol`** depending on which tools it needs.
+
+## Server env (Exegol as default single image)
+
+If you want **only** Exegol (not the custom Novatrix image) for `SANDBOX_IMAGE`:
+
+```env
+SANDBOX_MODE=docker
+SANDBOX_IMAGE=nwodtuhs/exegol:web
+SANDBOX_DOCKER_NETWORK=bridge
+```
+
+Per-session UI overrides still apply when multiple profiles are enabled (see schema on `Session`).
+
+## Entrypoint
+
+Exegol images define their own `ENTRYPOINT`. Novatrix forces `--entrypoint /bin/bash` when the image name matches `exegol` so `terminal_exec` runs your shell command predictably. Override via `SANDBOX_DOCKER_ENTRYPOINT` — see `.env.example`.
 
 ## Agent behavior
 
-The agent still uses a single `terminal_exec` tool; it does not get 400 discrete MCP tools. The manifest hint in `infra/docker/tools.manifest.yaml` and the system prompt describe that **any** CLI present in the container is fair game—use `command -v` / `which` before assuming paths.
+There is **one** `terminal_exec` tool; you do **not** get separate MCP tool names for each binary. The model should run `command -v toolname` or `--help` before assuming a path. The tool manifest (`infra/docker/tools.manifest.yaml`) lists what the **Novatrix** image includes; Exegol is described as “everything in the image”.
 
-## Legal and scope
+## Legal / scope
 
-Use Exegol only where you have **explicit authorization**. Novatrix allowlists still apply to `http_request` and `browser_navigate`; `terminal_exec` is constrained by your Docker network mode and your own policies.
+Use Exegol only where you are **authorized**. HTTP/browser tools still honor `TARGET_ALLOWLIST`; `terminal_exec` follows Docker network and your policies.

@@ -11,6 +11,10 @@ export async function POST(req: Request) {
   const session = await prisma.session.create({
     data: {
       title: 'New assessment',
+      sandboxEnableNovatrix: true,
+      sandboxEnableExegol: true,
+      /** Prefer bridge so both images can pull templates and tools can reach targets/DNS when SANDBOX_MODE=docker. */
+      sandboxDockerNetwork: 'bridge',
     },
   });
   return NextResponse.json({ id: session.id });

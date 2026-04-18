@@ -16,16 +16,18 @@ export interface RunAgentOptions {
   history: ChatCompletionMessageParam[];
   /** Retrieved memory / context (Neo Memory doc). */
   memoryContext?: string;
+  /** Operator notes: methodology, pasted writeup excerpts, constraints (UI). */
+  operatorContext?: string;
   /** Short summary of bundled CLI tools (from tools.manifest.yaml). */
   toolCatalogSummary?: string;
   /** Per-session Novatrix vs Exegol hints for the model. */
   sandboxRuntimeHint?: string;
   maxIterations?: number;
   onDelta?: (text: string) => void;
-  onTool?: (name: string, args: string, result: string) => void;
+  onTool?: (name: string, args: string, result: string) => void | Promise<void>;
   /** Live terminal/stderr chunks while terminal_exec runs (Neo sandbox streaming). */
   onToolStream?: (name: string, chunk: string, stream: 'stdout' | 'stderr') => void;
-  onFinding?: (finding: FindingPayload) => void;
+  onFinding?: (finding: FindingPayload) => void | Promise<void>;
   /** Backoff for OpenAI 429/503 (optional). */
   llmRetry?: Partial<LlmRetryOptions>;
 }
@@ -47,6 +49,9 @@ export async function runAgentTurn(opts: RunAgentOptions): Promise<RunAgentResul
   if (opts.memoryContext?.trim()) {
     systemContent += `\n\n## Session memory (retrieved)\n${opts.memoryContext.trim()}`;
   }
+  if (opts.operatorContext?.trim()) {
+    systemContent += `\n\n## Operator-provided context (methodology, scope notes, writeup excerpts)\n${opts.operatorContext.trim()}`;
+  }
   if (opts.history.length) {
     systemContent +=
       '\n\n## Continuity\nEarlier turns in `history` may have been produced by another model or provider. Treat the user/assistant transcript as ground truth and stay consistent with recorded findings and scope.';
@@ -57,7 +62,7 @@ export async function runAgentTurn(opts: RunAgentOptions): Promise<RunAgentResul
     ...opts.history,
     {
       role: 'user',
-      content: `${opts.userMessage}\n\nAllowed URL prefixes for this run: ${opts.allowlist.join(', ') || '(none — refuse outbound http_request / browser_navigate)'}`,
+      content: `${opts.userMessage}\n\nAllowed URL prefixes for this run: ${opts.allowlist.join(', ') || '(none; refuse outbound http_request / browser_navigate unless operator context authorizes)'}`,
     },
   ];
 
@@ -109,7 +114,7 @@ export async function runAgentTurn(opts: RunAgentOptions): Promise<RunAgentResul
       const name = tc.function.name;
       const argsRaw = tc.function.arguments ?? '{}';
       const result = await dispatchTool(name, argsRaw, toolCtxBase);
-      opts.onTool?.(name, argsRaw, result);
+      await Promise.resolve(opts.onTool?.(name, argsRaw, result));
       messages.push({
         role: 'tool',
         tool_call_id: tc.id,

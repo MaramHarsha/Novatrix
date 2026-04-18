@@ -109,16 +109,18 @@ Architecture as a **vector diagram** (SVG) so it always appears as a picture on 
 
 ## Sandbox modes
 
-- **`SANDBOX_MODE=mock`** (default): commands run on the host inside the session workspace under `artifacts/runs/<runId>` — convenient for development, **not** strong isolation.
-- **`SANDBOX_MODE=docker`**: commands run via `docker run` using image `SANDBOX_IMAGE` (default `novatrix-sandbox:latest`). Build it:
+- **`SANDBOX_MODE=docker`** (recommended in `.env.example`): commands run in Docker images — **required** for nuclei, httpx, Exegol, etc. Build/pull **`novatrix-sandbox:latest`** and enable **Exegol** in the UI (on by default for new chats):
 
   ```bash
-  docker build -f infra/docker/sandbox.Dockerfile -t novatrix-sandbox:latest .
+  bash scripts/docker/build-novatrix-sandbox.sh
+  bash scripts/docker/pull-exegol.sh
   ```
 
-- **`SANDBOX_DOCKER_NETWORK`**: `none` (default) for strong egress isolation, or `bridge` when scans must reach the Internet from the container.
-- **Exegol (optional)**: point `SANDBOX_IMAGE` at e.g. `nwodtuhs/exegol:web` after `docker pull`; Novatrix auto-uses `--entrypoint /bin/bash` for Exegol images so `terminal_exec` works. Details: [docs/EXEGOL.md](docs/EXEGOL.md).
-- **Per-session sandbox (UI)**: In the web app sidebar you can enable Novatrix and/or Exegol, override image names and Docker network without editing `.env`. When `SANDBOX_MODE=docker`, the first chat run of a session runs `docker pull` for the configured images (skipped if unchanged). The agent passes `sandbox_profile` on `terminal_exec` to pick the container.
+  If tools still look missing, check **`mock`** mode, image tags, or see [docs/EXEGOL.md](docs/EXEGOL.md).
+
+- **`SANDBOX_MODE=mock`**: commands run on the **host** under `artifacts/runs/<runId>` — only a basic shell (curl/wget); **no** bundled scanners.
+- **`SANDBOX_DOCKER_NETWORK`**: `bridge` (recommended for pulls and outbound scans) or `none` for egress isolation. New sessions default to **bridge** in the app.
+- **Dual profile**: New sessions default to **Novatrix + Exegol** enabled; the agent picks `sandbox_profile` `"novatrix"` or `"exegol"` per `terminal_exec`. Exegol images use `--entrypoint /bin/bash` automatically. Details: [docs/EXEGOL.md](docs/EXEGOL.md).
 
 ## Pre-built images (GHCR)
 

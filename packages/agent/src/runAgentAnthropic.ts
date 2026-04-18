@@ -30,13 +30,14 @@ export interface RunAgentAnthropicOptions {
   userMessage: string;
   history: ChatCompletionMessageParam[];
   memoryContext?: string;
+  operatorContext?: string;
   toolCatalogSummary?: string;
   sandboxRuntimeHint?: string;
   maxIterations?: number;
   onDelta?: (text: string) => void;
-  onTool?: (name: string, args: string, result: string) => void;
+  onTool?: (name: string, args: string, result: string) => void | Promise<void>;
   onToolStream?: (name: string, chunk: string, stream: 'stdout' | 'stderr') => void;
-  onFinding?: (finding: FindingPayload) => void;
+  onFinding?: (finding: FindingPayload) => void | Promise<void>;
   /** Backoff for Anthropic 429/529/503 (optional). */
   llmRetry?: Partial<LlmRetryOptions>;
 }
@@ -67,7 +68,7 @@ export async function runAgentTurnAnthropic(opts: RunAgentAnthropicOptions): Pro
     ...normalizeHistory(opts.history),
     {
       role: 'user',
-      content: `${opts.userMessage}\n\nAllowed URL prefixes for this run: ${opts.allowlist.join(', ') || '(none — refuse outbound http_request / browser_navigate)'}`,
+      content: `${opts.userMessage}\n\nAllowed URL prefixes for this run: ${opts.allowlist.join(', ') || '(none; refuse outbound http_request / browser_navigate unless operator context authorizes)'}`,
     },
   ];
 
@@ -115,7 +116,7 @@ export async function runAgentTurnAnthropic(opts: RunAgentAnthropicOptions): Pro
       if (block.type === 'tool_use') {
         const argsRaw = JSON.stringify(block.input ?? {});
         const result = await dispatchTool(block.name, argsRaw, toolCtxBase);
-        opts.onTool?.(block.name, argsRaw, result);
+        await Promise.resolve(opts.onTool?.(block.name, argsRaw, result));
         toolResultBlocks.push({
           type: 'tool_result',
           tool_use_id: block.id,

@@ -32,7 +32,7 @@ export interface DispatchToolOptions {
   allowlist: string[];
   workspaceHostPath: string;
   onToolStream?: (name: string, chunk: string, stream: 'stdout' | 'stderr') => void;
-  onFinding?: (finding: FindingPayload) => void;
+  onFinding?: (finding: FindingPayload) => void | Promise<void>;
 }
 
 function safeJsonParse(s: string): Record<string, unknown> {
@@ -159,15 +159,23 @@ export async function dispatchTool(
     const severity: FindingPayload['severity'] = ['info', 'low', 'medium', 'high', 'critical'].includes(rawSev)
       ? (rawSev as FindingPayload['severity'])
       : 'medium';
-    const finding: FindingPayload = {
-      title: String(args.title ?? 'Finding'),
-      severity,
-      description: String(args.description ?? ''),
-      evidence: args.evidence ? String(args.evidence) : undefined,
-      payload: args.payload ? String(args.payload) : undefined,
-    };
-    opts.onFinding?.(finding);
-    result = `Finding recorded: ${finding.title} (${finding.severity})`;
+    const ev = String(args.evidence ?? '').trim();
+    if (severity !== 'info' && ev.length === 0) {
+      result =
+        'error: evidence is required for severity ' +
+        severity +
+        ' — include tool output or HTTP excerpt, or use severity info if unproven';
+    } else {
+      const finding: FindingPayload = {
+        title: String(args.title ?? 'Finding'),
+        severity,
+        description: String(args.description ?? ''),
+        evidence: ev || undefined,
+        payload: args.payload ? String(args.payload) : undefined,
+      };
+      await Promise.resolve(opts.onFinding?.(finding));
+      result = `Finding recorded: ${finding.title} (${finding.severity})`;
+    }
   } else {
     result = `unknown tool ${name}`;
   }

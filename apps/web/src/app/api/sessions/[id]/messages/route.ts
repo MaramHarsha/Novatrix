@@ -23,6 +23,25 @@ import { parseLlmOverrides, resolveLlmConfig, validateResolvedLlm } from '@/lib/
 
 export const maxDuration = 300;
 
+/** Load persisted chat messages for UI (refresh / session switch). */
+export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id: sessionId } = await params;
+  const session = await prisma.session.findUnique({
+    where: { id: sessionId },
+    select: { id: true, title: true, updatedAt: true },
+  });
+  if (!session) {
+    return NextResponse.json({ error: 'session not found' }, { status: 404 });
+  }
+  const messages = await prisma.message.findMany({
+    where: { sessionId, role: { in: ['user', 'assistant'] } },
+    orderBy: { createdAt: 'asc' },
+    take: 200,
+    select: { id: true, role: true, content: true, createdAt: true },
+  });
+  return NextResponse.json({ session, messages });
+}
+
 function parseToolArgs(s: string): Record<string, unknown> {
   try {
     return JSON.parse(s) as Record<string, unknown>;
@@ -40,6 +59,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
   const body = await req.json();
   const content = typeof body.content === 'string' ? body.content : '';
+  const operatorContext =
+    typeof body.assessmentContext === 'string' ? body.assessmentContext.trim() : '';
   if (!content.trim()) {
     return new Response(JSON.stringify({ error: 'content required' }), { status: 400 });
   }
@@ -67,6 +88,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       sessionId,
       role: 'user',
       content,
+    },
+  });
+
+  const autoTitle =
+    (session.title === 'New assessment' || session.title === 'Assessment') && content.trim().length > 0
+      ? content.trim().split('\n')[0].trim().slice(0, 80) || session.title
+      : null;
+  await prisma.session.update({
+    where: { id: sessionId },
+    data: {
+      updatedAt: new Date(),
+      ...(autoTitle && autoTitle !== session.title ? { title: autoTitle } : {}),
     },
   });
 
@@ -116,7 +149,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
-      const send = (obj: object) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`));
+      const send = (obj: object) => {
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`));
+        } catch {
+          /* stream closed (e.g. client disconnect) while tool/docker still streams */
+        }
+      };
 
       try {
         const freshSession =
@@ -249,6 +288,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
                 userMessage: content,
                 history,
                 memoryContext: memoryContext || undefined,
+                operatorContext: operatorContext || undefined,
                 toolCatalogSummary: toolCatalogSummary || undefined,
                 sandboxRuntimeHint,
                 onDelta: (text) => send({ type: 'delta', text }),
@@ -267,6 +307,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
                 userMessage: content,
                 history,
                 memoryContext: memoryContext || undefined,
+                operatorContext: operatorContext || undefined,
                 toolCatalogSummary: toolCatalogSummary || undefined,
                 sandboxRuntimeHint,
                 onDelta: (text) => send({ type: 'delta', text }),
